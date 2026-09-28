@@ -3,10 +3,23 @@ import { test } from "node:test";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createHotspot } from "../server.ts";
 import { startupDelay } from "../lib/sample.ts";
+import { LIVE, SAMPLED } from "../lib/signals.ts";
 import { createStore } from "../lib/store.ts";
 
 const tick = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
-const sample = (at) => ({ at, thermal: 0, cpu: 10, load: 0.1, threads: [], procs: [] });
+const sample = (at, cpu = 10) => ({ at, thermal: 0, cpu, load: 0.1, threads: [], procs: [] });
+
+/** A sampler that records what it was asked for and reports `cpu` on both windows. */
+function recordingSampler(cpu = 10) {
+  const calls = [];
+  return {
+    calls,
+    takeReading: async (at, options) => {
+      calls.push(options.store);
+      return { live: sample(at, cpu), stored: options.store ? sample(at, cpu) : null };
+    },
+  };
+}
 
 test("startupDelay waits out the rest of the interval after a recent sample", () => {
   assert.equal(startupDelay(null, 100_000, 60_000), 0);
@@ -16,18 +29,13 @@ test("startupDelay waits out the rest of the interval after a recent sample", ()
 });
 
 test("a restarted service does not sample while the last sample is younger than one interval", async () => {
-  let calls = 0;
+  const sampler = recordingSampler();
   const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
-  await createHotspot(bb, {
-    takeSample: async (at) => {
-      calls += 1;
-      return sample(at);
-    },
-  });
+  await createHotspot(bb, { takeReading: sampler.takeReading });
   createStore(bb.storage.database()).addSample(sample(Date.now() - 1_000));
   const service = harness.runService("sampler");
   await tick();
-  assert.equal(calls, 0);
+  assert.deepEqual(sampler.calls, []);
   service.controller.abort();
   await service.done;
 });
@@ -36,7 +44,8 @@ test("a sample that finishes after the service stopped is not written", async ()
   let release;
   const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
   await createHotspot(bb, {
-    takeSample: (at) => new Promise((resolve) => (release = () => resolve(sample(at)))),
+    takeReading: (at, options) =>
+      new Promise((resolve) => (release = () => resolve({ live: sample(at), stored: options.store ? sample(at) : null }))),
   });
   const service = harness.runService("sampler");
   await tick();
@@ -45,4 +54,73 @@ test("a sample that finishes after the service stopped is not written", async ()
   release();
   await service.done;
   assert.equal(createStore(bb.storage.database()).latestAt(), null);
+});
+
+/** Loaded with a stored sample a second old, so the next stored one is a minute away. */
+async function loadWatched(cpu) {
+  const sampler = recordingSampler(cpu);
+  const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
+  await createHotspot(bb, { takeReading: sampler.takeReading, liveIntervalMs: 10, watchLeaseMs: 150 });
+  const store = createStore(bb.storage.database());
+  store.addSample(sample(Date.now() - 1_000));
+  const service = harness.runService("sampler");
+  const signals = (channel) => harness.inspection.realtimeSignals.filter((signal) => signal.channel === channel);
+  return { sampler, harness, store, service, signals };
+}
+
+test("live readings are pushed but never stored and never open an episode", async () => {
+  const { sampler, harness, store, service, signals } = await loadWatched(100);
+  await tick();
+  assert.deepEqual(sampler.calls, [], "nobody watches yet");
+
+  await harness.callRpc("watch", null);
+  await tick(100);
+  assert.ok(sampler.calls.length >= 4, `live readings: ${sampler.calls.length}`);
+  assert.ok(sampler.calls.every((store) => store === false));
+  assert.ok(signals(LIVE).length >= 4);
+  assert.equal(signals(LIVE).at(-1).payload.cpu, 100);
+  assert.equal(signals(SAMPLED).length, 0);
+  assert.equal(store.samples(0, Date.now()).length, 1);
+  // Fifty readings at 100% CPU would open an episode after three if they counted.
+  assert.equal(store.episodes(0, Date.now() + 1, 10).length, 0);
+  assert.equal(store.detectorState()?.streak ?? null, null);
+
+  const status = await harness.callRpc("status", null);
+  assert.equal(status.latest.cpu, 100, "status shows the newest live reading");
+  service.controller.abort();
+  await service.done;
+});
+
+test("live readings stop when the lease lapses and start again on the next heartbeat", async () => {
+  const { sampler, harness, service } = await loadWatched(10);
+  await harness.callRpc("watch", null);
+  await tick(250);
+  const stopped = sampler.calls.length;
+  assert.ok(stopped > 0);
+  await tick(100);
+  assert.equal(sampler.calls.length, stopped, "no readings once the lease lapsed");
+  assert.ok(harness.inspection.logEntries.some((entry) => /live readings stopped/.test(entry.message)));
+
+  await harness.callRpc("watch", null);
+  await tick(50);
+  assert.ok(sampler.calls.length > stopped, "a heartbeat wakes the sleeping sampler");
+  service.controller.abort();
+  await service.done;
+});
+
+test("a due sample is stored once per interval while live readings run", async () => {
+  const sampler = recordingSampler();
+  const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
+  await createHotspot(bb, { takeReading: sampler.takeReading, liveIntervalMs: 10, watchLeaseMs: 1_000 });
+  const store = createStore(bb.storage.database());
+  await harness.callRpc("watch", null);
+  const service = harness.runService("sampler");
+  await tick(100);
+  // No earlier sample: the first reading is stored, the rest are live only.
+  assert.equal(sampler.calls[0], true);
+  assert.ok(sampler.calls.slice(1).every((stored) => stored === false));
+  assert.ok(sampler.calls.length >= 4);
+  assert.equal(store.samples(0, Date.now()).length, 1);
+  service.controller.abort();
+  await service.done;
 });

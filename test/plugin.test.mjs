@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import plugin from "../server.ts";
+import plugin, { createHotspot } from "../server.ts";
 import { MIGRATIONS, createStore } from "../lib/store.ts";
 
 const MINUTE = 60_000;
@@ -11,15 +11,37 @@ const THREADS = {
   thr_hotthread1: { title: null, titleFallback: "Run the e2e suite" },
 };
 
+/** What an on-demand reading sees: the same hot machine as the stored sample. */
+function hotReading(at) {
+  return {
+    at,
+    thermal: 2,
+    cpu: 94,
+    load: 1.4,
+    memory: null,
+    threads: [
+      { threadId: "thr_aaaaaaaaaa", cpu: 90, processes: 1, memBytes: null },
+      { threadId: "thr_hotthread1", cpu: 70, processes: 6, memBytes: null },
+    ],
+    procs: [],
+  };
+}
+
 /** Load the plugin in the SDK's fake host with one stored episode. */
 async function loadWithEpisode() {
   const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
+  const readings = [];
   harness.sdk.stub("threads.get", async ({ threadId }) => {
     const thread = THREADS[threadId];
     if (thread === undefined) throw Object.assign(new Error("HTTP 404: Thread not found"), { status: 404 });
     return { id: threadId, ...thread };
   });
-  await plugin(bb);
+  await createHotspot(bb, {
+    takeReading: async (at, options) => {
+      readings.push(options);
+      return { live: hotReading(at), stored: null };
+    },
+  });
   const store = createStore(bb.storage.database());
   const start = Date.now() - 30 * MINUTE;
   store.saveEpisode({
@@ -49,7 +71,7 @@ async function loadWithEpisode() {
     ],
     procs: [],
   });
-  return { bb, harness };
+  return { bb, harness, readings };
 }
 
 function runTool(harness, params) {
@@ -85,7 +107,7 @@ test("hotspot_history reports an unreadable time as a tool error", async () => {
 });
 
 test("bb hotspot episodes and status print bounded text", async () => {
-  const { harness } = await loadWithEpisode();
+  const { harness, readings } = await loadWithEpisode();
   const episodes = await harness.runCli(["episodes", "--since", "1h"]);
   assert.equal(episodes.exitCode, 0);
   assert.match(episodes.stdout, /Run the e2e suite/);
@@ -96,6 +118,10 @@ test("bb hotspot episodes and status print bounded text", async () => {
   const status = await harness.runCli(["status"]);
   assert.match(status.stdout, /thermal heavy, CPU 94%/);
   assert.match(status.stdout, /thread  70%  Run the e2e suite/);
+  // Status takes a fresh reading, never a stored one, and reuses it for a few seconds.
+  assert.deepEqual(readings, [{ store: false }]);
+  await harness.runCli(["status"]);
+  assert.equal(readings.length, 1);
   assert.doesNotMatch(status.stdout + episodes.stdout + json.stdout, /thr_aaaaaaaaaa/);
 
   const bad = await harness.runCli(["episodes", "--limit", "500"]);

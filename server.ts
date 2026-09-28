@@ -4,7 +4,10 @@
 // A background service samples heat, CPU, memory and the busiest threads on a timer
 // and stores every sample in the plugin's SQLite database. Each sample also
 // feeds the episode detector (lib/episodes.ts), which opens, extends and
-// closes stored hot episodes and ranks their culprit threads. The sampler reads
+// closes stored hot episodes and ranks their culprit threads. While a BB
+// window is visible and holds the watch lease, the same service also takes a
+// live reading every couple of seconds and pushes it to the footer and page;
+// live readings are never stored and never reach the detector. The sampler reads
 // the server's own machine: `ps`, `notifyutil`, `vm_stat`, `sysctl` and `os`,
 // never a remote host.
 // Sampling only reads. The one thing that signals a process is the user's own
@@ -39,8 +42,8 @@ import {
   parseWhen,
   summarizeWindow,
 } from "./lib/report";
-import { EPISODE_OPENED, type EpisodeOpenedSignal, SAMPLED } from "./lib/signals";
-import { TOP_THREADS, createSampler, startupDelay } from "./lib/sample";
+import { EPISODE_OPENED, type EpisodeOpenedSignal, LIVE, type LiveSignal, SAMPLED } from "./lib/signals";
+import { TOP_THREADS, type TakeReading, createSampler, startupDelay } from "./lib/sample";
 import type { EpisodeView, Sample, SampleView } from "./lib/schemas";
 import {
   createThreadDirectory,
@@ -74,8 +77,18 @@ const CLI_MAX_CHARS = 32_000;
 const WHEN_HELP =
   "`90m`, `3h`, `2d`, `1w` back from now; `15:00` for the most recent 15:00 (server-local); or an ISO date/time";
 
-/** Resolves when `ms` elapses or `signal` aborts, whichever comes first. */
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
+/** How often a live reading is taken while someone is looking. */
+const LIVE_INTERVAL_MS = 2_000;
+/** How long one heartbeat from a visible window keeps live readings going. */
+const WATCH_LEASE_MS = 10_000;
+/** A reading younger than this answers "now" without running `ps` again. */
+const FRESH_MS = 5_000;
+
+/**
+ * Resolves when `ms` elapses or `signal` aborts, whichever comes first.
+ * `onWake`, if given, receives a function that ends the sleep early.
+ */
+function sleep(ms: number, signal: AbortSignal, onWake?: (wake: () => void) => void): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) return resolve();
     const timer = setTimeout(done, ms);
@@ -85,6 +98,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       resolve();
     }
     signal.addEventListener("abort", done, { once: true });
+    onWake?.(done);
   });
 }
 
@@ -99,7 +113,9 @@ const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, 
 
 /** What tests may inject into createHotspot. */
 export interface HotspotDeps {
-  takeSample?: (at: number) => Promise<Sample>;
+  takeReading?: TakeReading;
+  liveIntervalMs?: number;
+  watchLeaseMs?: number;
   /** The process table and signals the kill action uses. */
   kill?: {
     readRows: () => Promise<KillRow[]>;
@@ -182,16 +198,29 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
     return episodes.map((episode) => viewEpisode(episode, known, limit));
   }
 
+  async function view(sample: Sample): Promise<SampleView> {
+    const known = await directory.resolve(idsToResolve(sample.threads, TOP_THREADS));
+    return viewSample(sample, known, TOP_THREADS);
+  }
+
+  /** The last live reading; kept in memory only. */
+  let lastLive: Sample | null = null;
+
+  /** The newest reading: the last live one unless a stored sample is newer. */
+  function latestSample(): Sample | null {
+    const stored = store.latest();
+    if (lastLive === null) return stored;
+    return stored !== null && stored.at > lastLive.at ? stored : lastLive;
+  }
+
   async function viewLatest(): Promise<SampleView | null> {
-    const latest = store.latest();
-    if (latest === null) return null;
-    const known = await directory.resolve(idsToResolve(latest.threads, TOP_THREADS));
-    return viewSample(latest, known, TOP_THREADS);
+    const latest = latestSample();
+    return latest === null ? null : view(latest);
   }
 
   let processErrorLogged = false;
   let memoryErrorLogged = false;
-  const takeSample = deps.takeSample ?? createSampler({
+  const sampler = deps.takeReading ?? createSampler({
     // Logged once per load: a missing `ps` fails every sample the same way.
     onProcessError(error) {
       if (processErrorLogged) return;
@@ -217,11 +246,36 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
   const strays = store.closeStrayEpisodes(detector.open?.id ?? null);
   if (strays > 0) bb.log.info(`closed ${strays} episode(s) the detector no longer tracks`);
 
-  async function record(at: number, signal: AbortSignal): Promise<void> {
+  // The loop and an on-demand "now" share the sampler's windows, so one
+  // reading runs at a time.
+  let reading: Promise<unknown> = Promise.resolve();
+  function takeReading(...args: Parameters<TakeReading>): ReturnType<TakeReading> {
+    const next = reading.then(() => sampler(...args));
+    reading = next.catch(() => undefined);
+    return next;
+  }
+
+  const liveIntervalMs = deps.liveIntervalMs ?? LIVE_INTERVAL_MS;
+  const watchLeaseMs = deps.watchLeaseMs ?? WATCH_LEASE_MS;
+  /** Live readings run until this time; each `watch` call pushes it out. */
+  let watchedUntil = 0;
+  const watched = () => Date.now() < watchedUntil;
+  /** Ends the sampler's current sleep; a no-op while it is reading. */
+  let wakeSampler: () => void = () => undefined;
+
+  /** A fresh-enough reading for "now": the last one, or a new live-only one. */
+  async function readNow(): Promise<Sample | null> {
+    if (lastLive !== null && Date.now() - lastLive.at < FRESH_MS) return lastLive;
+    try {
+      lastLive = (await takeReading(Date.now(), { store: false })).live;
+    } catch (error) {
+      bb.log.warn(`reading failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return latestSample();
+  }
+
+  async function record(sample: Sample): Promise<void> {
     const { sampleIntervalSeconds, cpuThreshold } = await settings.get();
-    const sample = await takeSample(at);
-    // Unloaded while `ps` ran: this generation must not write any more.
-    if (signal.aborted) return;
     const result = step(detector, sample, {
       cpuThreshold,
       openAfter: OPEN_AFTER,
@@ -364,7 +418,7 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
 
   bb.rpc.register(rpcContract, {
     async overview() {
-      const latest = store.latest();
+      const latest = latestSample();
       const threadIds = (latest?.threads ?? []).slice(0, TOP_THREADS).map((entry) => entry.threadId);
       const states = await Promise.all(threadIds.map(async (threadId) => [threadId, await isRunning(threadId)] as const));
       return {
@@ -383,6 +437,12 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
       await bb.sdk.threads.stop({ threadId });
       bb.log.info(`stopped the running turn of ${threadId} from the footer popover`);
       return { ok: true as const };
+    },
+    watch() {
+      const wasWatched = watched();
+      watchedUntil = Math.max(watchedUntil, Date.now() + watchLeaseMs);
+      if (!wasWatched) wakeSampler();
+      return { leaseMs: watchLeaseMs, liveIntervalMs };
     },
     async status() {
       const { cpuThreshold, sampleIntervalSeconds } = await settings.get();
@@ -411,21 +471,44 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
     },
   });
 
+  // One ticker serves both cadences. Each tick is one reading: stored when
+  // a sample is due, pushed live while a window holds the watch lease, and
+  // skipped entirely when neither applies.
   bb.background.service("sampler", {
     async start(signal) {
       // A reload restarts the service; sampling again at once would count
       // one extra sample into the streak. Wait out the rest of the interval.
       const { sampleIntervalSeconds: seconds } = await settings.get();
-      await sleep(startupDelay(store.latestAt(), Date.now(), seconds * 1_000), signal);
+      let storeAt = Date.now() + startupDelay(store.latestAt(), Date.now(), seconds * 1_000);
+      let wasLive = false;
       while (!signal.aborted) {
         const started = Date.now();
         const { sampleIntervalSeconds } = await settings.get();
-        try {
-          await record(started, signal);
-        } catch (error) {
-          bb.log.warn(`sample failed: ${error instanceof Error ? error.message : String(error)}`);
+        const due = started >= storeAt;
+        const live = watched();
+        if (live !== wasLive) bb.log.info(live ? "live readings started" : "live readings stopped: no window is watching");
+        wasLive = live;
+        if (due || live) {
+          try {
+            const { live: now, stored } = await takeReading(started, { store: due });
+            // Unloaded while `ps` ran: this generation must not write any more.
+            if (signal.aborted) return;
+            lastLive = now;
+            if (stored !== null) await record(stored);
+            if (live) {
+              const payload: LiveSignal = await view(now);
+              bb.realtime.publish(LIVE, payload);
+            }
+          } catch (error) {
+            bb.log.warn(`sample failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          if (due) storeAt = started + sampleIntervalSeconds * 1_000;
         }
-        await sleep(Math.max(1_000, sampleIntervalSeconds * 1_000 - (Date.now() - started)), signal);
+        // Asked again after the reading: a heartbeat that arrived during it
+        // found no sleep to end.
+        const next = watched() ? Math.min(storeAt, started + liveIntervalMs) : storeAt;
+        await sleep(Math.max(0, next - Date.now()), signal, (wake) => (wakeSampler = wake));
+        wakeSampler = () => undefined;
       }
     },
   });
@@ -532,10 +615,11 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
           },
         }),
         status: cliCommand({
-          summary: "Latest sample: thermal level, CPU, memory, load, busiest threads and processes",
+          summary: "Now: thermal level, CPU, memory, load, busiest threads and processes",
           options: { json: { type: "boolean", description: "Emit JSON" } },
           async run(input) {
-            const latest = await viewLatest();
+            const now = await readNow();
+            const latest = now === null ? null : await view(now);
             const [open] = detector.open === null ? [null] : await viewEpisodes([detector.open], 5);
             if (input.options.json) {
               const trimmed = open === null ? null : { ...open, others: open.others.slice(0, 5) };

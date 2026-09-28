@@ -11,6 +11,11 @@ const LINUX_PS = [
   "  500     1 30.0  1000 grep thr_cccccccccc",
 ].join("\n");
 
+/** `/proc/<pid>/stat` for pid 200 only: 250 + 50 ticks of CPU, started at tick 4242. */
+const STATS = {
+  200: `200 (claude code) S 1 ${Array.from({ length: 9 }, () => "0").join(" ")} 250 50 ${Array.from({ length: 6 }, () => "0").join(" ")} 4242 0`,
+};
+
 const ENVIRONS = {
   200: "HOME=/home/me\0PWD=/home/me/.bb/workspaces/thr_dddddddddd\0BB_THREAD_ID=thr_aaaaaaaaaa\0",
 };
@@ -35,6 +40,9 @@ function linuxSource(overrides = {}) {
       async readEnviron(pid) {
         return ENVIRONS[pid] ?? null;
       },
+      async readStat(pid) {
+        return STATS[pid] ?? null;
+      },
       ...overrides,
     },
   };
@@ -51,6 +59,11 @@ test("off macOS, ps runs without -E and the thread comes from /proc environ", as
   assert.equal(byPid[200].name, "node");
   assert.equal(byPid[400].threadId, "thr_bbbbbbbbbb");
   assert.equal(byPid[500].threadId, null);
+  // CPU time comes from /proc/<pid>/stat; an unreadable stat leaves it unknown, and the row keeps ps pcpu.
+  assert.equal(byPid[200].cpuMs, 3_000);
+  assert.equal(byPid[200].key, "200@4242");
+  assert.equal(byPid[300].cpuMs, null);
+  assert.equal(byPid[300].key, null);
 
   const threads = groupByThread(rows, attributeThreads(rows));
   assert.deepEqual(
@@ -66,13 +79,13 @@ test("when ps fails, a sample is still stored with kernel CPU and no threads", a
       throw new Error("ps: command not found");
     },
   });
-  const takeSample = createSampler({
+  const takeReading = createSampler({
     processes: source,
     thermal: async () => null,
     memory: linuxMemory,
     onProcessError: (error) => errors.push(error.message),
   });
-  const sample = await takeSample(123);
+  const { live: sample } = await takeReading(123, { store: false });
   assert.equal(sample.at, 123);
   assert.equal(sample.thermal, null);
   assert.deepEqual(sample.threads, []);
@@ -83,10 +96,26 @@ test("when ps fails, a sample is still stored with kernel CPU and no threads", a
 
 test("a Linux sample ranks threads found through /proc", async () => {
   const { source } = linuxSource();
-  const takeSample = createSampler({ processes: source, thermal: async () => null, memory: linuxMemory });
-  const sample = await takeSample(1);
+  const takeReading = createSampler({ processes: source, thermal: async () => null, memory: linuxMemory });
+  const { stored: sample } = await takeReading(1, { store: true });
   assert.equal(sample.memory?.percent, 60);
   assert.deepEqual(sample.threads.map((entry) => entry.memBytes), [2 * 1000 * 1024, 1000 * 1024]);
   assert.deepEqual(sample.threads.map((entry) => entry.threadId), ["thr_aaaaaaaaaa", "thr_bbbbbbbbbb"]);
   assert.deepEqual(sample.procs.map((entry) => entry.pid), [500]);
+});
+
+test("a Linux source without /proc stat still samples, on ps pcpu alone", async () => {
+  const { source } = linuxSource();
+  delete source.readStat;
+  let now = 0;
+  const takeReading = createSampler({
+    processes: source,
+    thermal: async () => null,
+    memory: linuxMemory,
+    cores: 1,
+    clock: () => (now += 2_000),
+  });
+  await takeReading(1, { store: false });
+  const { live } = await takeReading(2, { store: false });
+  assert.deepEqual(live.threads.map((entry) => [entry.threadId, entry.cpu]), [["thr_aaaaaaaaaa", 92.5], ["thr_bbbbbbbbbb", 9]]);
 });

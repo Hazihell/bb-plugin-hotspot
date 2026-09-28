@@ -52,6 +52,7 @@ export const rpcContract = defineRpcContract({
   status: {
     input: z.null(),
     output: z.object({
+      /** The newest reading: live when one is fresher than the last stored sample. */
       latest: sampleViewSchema.nullable(),
       open: episodeViewSchema.nullable(),
       /** The last hour in RECENT_BUCKETS equal buckets, oldest first, for the metric sparklines. */
@@ -68,6 +69,14 @@ export const rpcContract = defineRpcContract({
       running: z.record(z.string(), z.boolean()),
       allowKill: z.boolean(),
     }),
+  },
+  /**
+   * A visible window's heartbeat. Live readings run while any window has
+   * called this within the lease, and stop when every lease lapses.
+   */
+  watch: {
+    input: z.null(),
+    output: z.object({ leaseMs: z.number(), liveIntervalMs: z.number() }),
   },
   killPlan: {
     input: z.object({ threadId: threadIdSchema }).strict(),

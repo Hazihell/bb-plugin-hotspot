@@ -36,7 +36,7 @@ async function load({ status = "active", extra = [] } = {}) {
   let rows = [...TABLE, ...extra].join("\n");
   const signals = [];
   await createHotspot(bb, {
-    takeSample: async (at) => ({ at, thermal: 0, cpu: 10, load: 0.1, threads: [], procs: [] }),
+    takeReading: async (at) => ({ live: { at, thermal: 0, cpu: 10, load: 0.1, threads: [], procs: [] }, stored: null }),
     kill: {
       readRows: async () => rows.split("\n").map((entry) => parseKillLine(entry)).filter(Boolean),
       signal: (pid, signal) => {

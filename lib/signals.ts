@@ -2,8 +2,19 @@
  * Realtime channels between the server and the app bundle. Kept free of zod
  * so the frontend can import the names as values.
  */
+import type { SampleView } from "./schemas";
+
+/** A sample was stored: history, episodes and sparklines changed. */
 export const SAMPLED = "sampled";
+/**
+ * A live reading, every couple of seconds while a window keeps the watch
+ * lease. The payload is the reading itself (a `LiveSignal`), so the footer
+ * and popover update without asking the server. Never stored.
+ */
+export const LIVE = "live";
 export const EPISODE_OPENED = "episode-opened";
+
+export type LiveSignal = SampleView;
 
 export interface EpisodeOpenedSignal {
   id: number;
