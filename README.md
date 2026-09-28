@@ -41,14 +41,15 @@ and Kill processes…, which kills its work processes after a confirmation
 that names what gets SIGTERM and lists what is spared. Threads under 1% CPU
 and 1 GB of memory fold into an "N idle threads" line, and only the thread
 list scrolls, so the verdict, numbers and last hot spells stay in view.
-Readings change the numbers in place; the list itself holds steady. Rows
-swap only when one leads its neighbour by more than 5 points, at most every
+Readings change the numbers in place; the list itself holds steady. A row
+climbs over a row only when it leads it by more than 5 points, at most every
 6 s; a thread folds after 15 s idle and comes back at once above 5% or after
 6 s busy; a thread missing from a reading keeps its row, CPU shown as "—",
 for 10 s. While the pointer or keyboard focus is in the list, or a row's
 "…" is unfolded, no row moves, joins or leaves, so Stop turn and Kill stay
 on the thread you opened them for. The list keeps room for three rows and
-the popover never shrinks while open, so it does not jump. On a
+never shrinks while the popover is open, except when you hide the idle
+threads, so the popover does not jump. On a
 phone (BB Connect) the indicator sits in the sidebar drawer's footer, the
 popover opens as a bottom sheet with 44px targets, and the drawer closes
 when you jump to a thread or the page.
