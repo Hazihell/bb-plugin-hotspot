@@ -114,7 +114,8 @@ function Metric({
   children: ReactNode;
 }) {
   return (
-    <div role="group" aria-label={description} title={description} className="min-w-0">
+    // Tabular digits, so a value and its caption keep their width as the readings change.
+    <div role="group" aria-label={description} title={description} className="min-w-0 tabular-nums">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div
         className={cn(

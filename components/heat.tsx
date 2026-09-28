@@ -106,7 +106,8 @@ export function VerdictBlock({
       ) : null}
       {culprit === null ? (
         view.reassurance === null ? null : (
-          <p className="mt-2 text-sm text-foreground">{view.reassurance}</p>
+          // As tall as the culprit line it trades places with, a finger-sized link on a phone included.
+          <p className="mt-2 flex items-center text-sm text-foreground max-md:pointer-coarse:min-h-11">{view.reassurance}</p>
         )
       ) : (
         <div className="mt-2 flex min-w-0 items-center gap-2 text-sm">
@@ -121,7 +122,8 @@ export function VerdictBlock({
           >
             <span className="truncate">{culprit.title ?? culprit.threadId}</span>
           </Button>
-          <span className="shrink-0 tabular-nums text-muted-foreground">{pct(culprit.cpu)}</span>
+          {/* Four digits' room, so the title's cut does not move as the share changes. */}
+          <span className="min-w-[4ch] shrink-0 tabular-nums text-muted-foreground">{pct(culprit.cpu)}</span>
         </div>
       )}
       {children}
