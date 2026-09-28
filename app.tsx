@@ -1,53 +1,26 @@
 // bb-plugin-hotspot — frontend entry.
 //
 // Four surfaces, all reading the server over RPC and refreshing on its
-// realtime signals: the Hotspot page (timeline + episodes + culprits), a
-// one-word badge on its sidebar row while the Mac is hot, the always-visible
-// indicator and popover in the sidebar footer (components/footer-indicator),
-// and an app-wide overlay that turns the server's "episode opened" signal into
-// a toast.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent, ReactNode } from "react";
+// realtime signals: the Hotspot page (verdict, timeline, hot spells and their
+// culprits), a short badge on its sidebar row while the Mac is hot, the
+// always-visible indicator and popover in the sidebar footer
+// (components/footer-indicator), and an app-wide overlay that turns the
+// server's "episode opened" signal into a toast.
+import { useCallback, useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { definePluginApp, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
-import type { Episode, Range, Status, Timeline, rpcContract } from "./lib/contract";
+import type { Episode, Range, Timeline, rpcContract } from "./lib/contract";
 import { FooterIndicator } from "@/components/footer-indicator";
+import { ErrorNote, SkeletonLine, VerdictBlock, thermalSwatch } from "@/components/heat";
+import { TimelineChart } from "@/components/timeline-chart";
 import { useStatus } from "@/hooks/use-status";
 import { thermalLabel } from "./lib/labels";
+import { clockText, dayClockText, durationText, pct } from "./lib/present";
 import { EPISODE_OPENED, type EpisodeOpenedSignal, SAMPLED } from "./lib/signals";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-
-/** Status colors for the thermal strip; always shown beside a text label. */
-function thermalClass(level: number | null): string {
-  if (level === null) return "bg-transparent";
-  if (level === 0) return "bg-muted-foreground/20";
-  if (level === 1) return "bg-amber-400";
-  if (level === 2) return "bg-orange-500";
-  return "bg-destructive";
-}
-
-const pct = (value: number) => `${Math.round(value)}%`;
-
-function clock(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function dayClock(at: number): string {
-  return new Date(at).toLocaleString([], {
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function duration(ms: number): string {
-  const minutes = Math.max(1, Math.round(ms / 60_000));
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours} h ${minutes % 60} min`;
-}
 
 function threadLabel(culprit: { threadId: string; title: string | null }): string {
   return culprit.title ?? culprit.threadId;
@@ -72,295 +45,62 @@ function useTimeline(range: Range) {
   }, [rpc, range]);
   useEffect(refetch, [refetch]);
   useRealtime(SAMPLED, refetch);
-  return { timeline, error };
+  return { timeline, error, refetch };
+}
+
+/** `episode/<id>` from the popover's recent list. */
+function episodeFromSubPath(subPath: string): number | null {
+  const match = /^episode\/(\d+)$/.exec(subPath);
+  return match === null ? null : Number(match[1]);
 }
 
 /* ------------------------------------------------------------------ */
 /* Page                                                                */
 /* ------------------------------------------------------------------ */
 
-function Stat({ label, value, detail }: { label: string; value: ReactNode; detail?: ReactNode }) {
-  return (
-    <div className="min-w-0 rounded-lg border border-border bg-card px-3 py-2">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-0.5 truncate text-lg font-medium tabular-nums">{value}</div>
-      {detail === undefined ? null : (
-        <div className="truncate text-xs text-muted-foreground">{detail}</div>
-      )}
-    </div>
-  );
-}
-
-function NowStrip({ status }: { status: Status | null }) {
-  const latest = status?.latest ?? null;
-  if (latest === null) {
-    return <EmptyState>Waiting for the first sample…</EmptyState>;
-  }
-  const top = latest.threads[0] ?? null;
-  return (
-    <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-      <Stat
-        label="Thermal pressure"
-        value={
-          <span className="inline-flex items-center gap-2">
-            <span className={cn("size-2.5 rounded-full", thermalClass(latest.thermal))} />
-            {thermalLabel(latest.thermal)}
-          </span>
-        }
-        detail={status?.open ? `Hot since ${clock(status.open.startAt)}` : `at ${clock(latest.at)}`}
-      />
-      <Stat label="CPU" value={pct(latest.cpu)} detail={`threshold ${pct(status?.cpuThreshold ?? 80)}`} />
-      <Stat label="Load per core" value={latest.load.toFixed(2)} detail="1-minute average" />
-      <Stat
-        label="Busiest thread"
-        value={top === null ? "none" : pct(top.cpu)}
-        detail={top === null ? "no thread is using CPU" : threadLabel(top)}
-      />
-    </div>
-  );
-}
-
-const CHART_W = 1000;
-const CHART_H = 160;
-
-/**
- * CPU over the range as one area series on a 0–100% axis, with the thermal
- * level as a separate strip underneath (never a second y-axis). Episodes are
- * shaded; hovering shows the bucket, clicking inside an episode selects it.
- */
-function TimelineChart({
-  timeline,
-  cpuThreshold,
-  selectedId,
-  onSelect,
-}: {
-  timeline: Timeline;
-  cpuThreshold: number;
-  selectedId: number | null;
-  onSelect: (id: number | null) => void;
-}) {
-  const { from, to, bucketMs, points, episodes } = timeline;
-  const span = to - from;
-  const x = useCallback((at: number) => ((at - from) / span) * CHART_W, [from, span]);
-  const y = (cpu: number) => CHART_H - (cpu / 100) * CHART_H;
-  const [hover, setHover] = useState<number | null>(null);
-  const plotRef = useRef<HTMLDivElement>(null);
-
-  // One path per run of sampled buckets, so sleep shows as a gap.
-  const areas = useMemo(() => {
-    const runs: string[] = [];
-    let run: Array<[number, number]> = [];
-    const flush = () => {
-      if (run.length > 0) {
-        const line = run.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(" L");
-        runs.push(`M${run[0][0].toFixed(1)},${CHART_H} L${line} L${run[run.length - 1][0].toFixed(1)},${CHART_H} Z`);
-      }
-      run = [];
-    };
-    for (const point of points) {
-      if (point.cpu === null) flush();
-      else run.push([x(point.at + bucketMs / 2), CHART_H - (point.cpu / 100) * CHART_H]);
-    }
-    flush();
-    return runs;
-  }, [points, bucketMs, x]);
-
-  const indexAt = (event: MouseEvent<HTMLDivElement>) => {
-    const rect = plotRef.current?.getBoundingClientRect();
-    if (rect === undefined || rect.width === 0) return null;
-    const ratio = Math.min(0.9999, Math.max(0, (event.clientX - rect.left) / rect.width));
-    return Math.floor(ratio * points.length);
-  };
-  const episodeAt = (at: number) =>
-    episodes.find((episode) => at + bucketMs >= episode.startAt && at <= (episode.endAt ?? to)) ?? null;
-
-  const hovered = hover === null ? null : (points[hover] ?? null);
-  const hoveredEpisode = hovered === null ? null : episodeAt(hovered.at);
-  const tickCount = span > 2 * 86_400_000 ? 7 : 4;
-  const ticks = Array.from({ length: tickCount + 1 }, (_, index) => from + (span * index) / tickCount);
-
-  return (
-    <div className="rounded-lg border border-border bg-card p-3">
-      <div className="flex gap-2">
-        <div className="relative w-8 shrink-0 text-right text-[10px] text-muted-foreground" style={{ height: CHART_H }}>
-          <span className="absolute right-0 top-0 -translate-y-1/2">100%</span>
-          <span className="absolute right-0 top-1/2 -translate-y-1/2">50%</span>
-          <span className="absolute bottom-0 right-0 translate-y-1/2">0%</span>
-        </div>
-        <div className="min-w-0 flex-1">
-          <div
-            ref={plotRef}
-            className="relative cursor-crosshair"
-            style={{ height: CHART_H }}
-            onMouseMove={(event) => setHover(indexAt(event))}
-            onMouseLeave={() => setHover(null)}
-            onClick={(event) => {
-              const index = indexAt(event);
-              const point = index === null ? null : points[index];
-              const episode = point ? episodeAt(point.at) : null;
-              onSelect(episode?.id ?? null);
-            }}
-          >
-            <svg
-              viewBox={`0 0 ${CHART_W} ${CHART_H}`}
-              preserveAspectRatio="none"
-              className="absolute inset-0 h-full w-full overflow-visible"
-              aria-label="CPU over time"
-              role="img"
-            >
-              {[0, 50, 100].map((grid) => (
-                <line
-                  key={grid}
-                  x1={0}
-                  x2={CHART_W}
-                  y1={y(grid)}
-                  y2={y(grid)}
-                  className="stroke-border"
-                  vectorEffect="non-scaling-stroke"
-                />
-              ))}
-              {episodes.map((episode) => (
-                <rect
-                  key={episode.id}
-                  x={x(episode.startAt)}
-                  width={Math.max(x(from + bucketMs), x(episode.endAt ?? to) - x(episode.startAt))}
-                  y={0}
-                  height={CHART_H}
-                  className={cn(
-                    "fill-destructive",
-                    episode.id === selectedId ? "opacity-25" : "opacity-10",
-                  )}
-                />
-              ))}
-              {areas.map((d, index) => (
-                <path
-                  key={index}
-                  d={d}
-                  className="fill-primary/15 stroke-primary"
-                  strokeWidth={2}
-                  strokeLinejoin="round"
-                  vectorEffect="non-scaling-stroke"
-                />
-              ))}
-              <line
-                x1={0}
-                x2={CHART_W}
-                y1={y(cpuThreshold)}
-                y2={y(cpuThreshold)}
-                className="stroke-destructive"
-                strokeDasharray="4 4"
-                vectorEffect="non-scaling-stroke"
-              />
-              {hovered === null ? null : (
-                <line
-                  x1={x(hovered.at + bucketMs / 2)}
-                  x2={x(hovered.at + bucketMs / 2)}
-                  y1={0}
-                  y2={CHART_H}
-                  className="stroke-foreground/40"
-                  vectorEffect="non-scaling-stroke"
-                />
-              )}
-            </svg>
-            {hovered === null ? null : (
-              <div
-                className="pointer-events-none absolute top-1 z-10 w-44 rounded-md border border-border bg-popover px-2 py-1.5 text-xs text-popover-foreground shadow-md"
-                style={
-                  hover !== null && hover > points.length / 2
-                    ? { right: `${100 - (hover / points.length) * 100 + 1}%` }
-                    : { left: `${((hover ?? 0) / points.length) * 100 + 1}%` }
-                }
-              >
-                <div className="font-medium">
-                  {dayClock(hovered.at)}–{clock(hovered.at + bucketMs)}
-                </div>
-                <div className="text-muted-foreground">
-                  CPU peak {hovered.cpu === null ? "no data" : pct(hovered.cpu)}
-                </div>
-                <div className="text-muted-foreground">Thermal {thermalLabel(hovered.thermal)}</div>
-                {hoveredEpisode === null ? null : (
-                  <div className="mt-1 text-destructive">Hot episode · click for culprits</div>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="mt-1.5 flex h-2.5 overflow-hidden rounded-sm" aria-label="Thermal pressure over time">
-            {points.map((point) => (
-              <div key={point.at} className={cn("h-full flex-1", thermalClass(point.thermal))} />
-            ))}
-          </div>
-          <div className="relative mt-1 h-4 text-[10px] text-muted-foreground">
-            {ticks.map((tick, index) => (
-              <span
-                key={tick}
-                className={cn(
-                  "absolute whitespace-nowrap",
-                  index === 0 ? "" : index === ticks.length - 1 ? "-translate-x-full" : "-translate-x-1/2",
-                )}
-                style={{ left: `${(index / tickCount) * 100}%` }}
-              >
-                {span > 2 * 86_400_000 ? dayClock(tick) : clock(tick)}
-              </span>
-            ))}
-          </div>
-        </div>
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 pl-10 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-0.5 w-3 bg-primary" /> CPU (bucket peak)
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="size-2.5 rounded-sm bg-destructive/20" /> Hot episode
-        </span>
-        <span className="inline-flex items-center gap-1.5">Thermal:</span>
-        {[0, 1, 2, 3].map((level) => (
-          <span key={level} className="inline-flex items-center gap-1.5">
-            <span className={cn("size-2.5 rounded-sm", thermalClass(level))} />
-            {thermalLabel(level)}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function EpisodeDetail({ episode }: { episode: Episode }) {
+function EpisodeDetail({ episode, intervalMs }: { episode: Episode; intervalMs: number }) {
   const navigate = useBbNavigate();
   // Idle threads that only made the top five on a quiet sample are noise.
   const culprits = episode.culprits
     .filter((culprit, index) => index < 3 || culprit.cpuSum / Math.max(1, episode.samples) >= 0.5)
     .slice(0, 10);
-  const others = episode.others.slice(0, 5);
+  const others = episode.others.filter((other) => other.cpuSum / Math.max(1, episode.samples) >= 1).slice(0, 5);
+  const minutes = (samples: number) => durationText(samples * intervalMs);
   return (
-    <div className="border-t border-border bg-muted/30 px-4 py-3 text-sm">
+    <div className="border-t border-border bg-muted/30 px-3 py-2 text-sm sm:px-4">
       {culprits.length === 0 ? (
-        <p className="text-muted-foreground">No BB thread was busy during this episode.</p>
+        <p className="py-1.5 text-muted-foreground">No BB thread was busy during this hot spell.</p>
       ) : (
-        <ol className="space-y-1.5">
+        <ol>
           {culprits.map((culprit, index) => (
-            <li key={culprit.threadId} className="flex items-center gap-3">
-              <span className="w-4 shrink-0 text-right text-xs text-muted-foreground">{index + 1}</span>
+            <li key={culprit.threadId}>
               <button
                 type="button"
-                className="min-w-0 flex-1 truncate text-left text-primary underline-offset-4 hover:underline"
+                className="group flex min-h-10 w-full items-center gap-3 rounded-md px-1 py-1.5 text-left outline-none hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring max-md:pointer-coarse:min-h-12"
                 onClick={() => navigate.toThread(culprit.threadId)}
               >
-                {threadLabel(culprit)}
+                <span className="w-4 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{index + 1}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium text-foreground group-hover:underline group-hover:underline-offset-4">
+                    {threadLabel(culprit)}
+                  </span>
+                  <span className="block text-xs tabular-nums text-muted-foreground">
+                    avg {pct(culprit.cpuSum / Math.max(1, episode.samples))} · peak {pct(culprit.peakCpu)}
+                    {culprit.samples < episode.samples
+                      ? ` · busy for ${minutes(culprit.samples)} of ${minutes(episode.samples)}`
+                      : null}
+                  </span>
+                </span>
+                <Icon name="ChevronRight" className="size-4 shrink-0 text-muted-foreground" />
               </button>
-              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                avg {pct(culprit.cpuSum / Math.max(1, episode.samples))} · peak {pct(culprit.peakCpu)} ·{" "}
-                {culprit.samples}/{episode.samples} samples
-              </span>
             </li>
           ))}
         </ol>
       )}
       {others.length === 0 ? null : (
-        <p className="mt-3 text-xs text-muted-foreground">
-          Outside BB threads:{" "}
-          {others
-            .map((other) => `${other.name} avg ${pct(other.cpuSum / Math.max(1, episode.samples))}`)
-            .join(" · ")}
+        <p className="px-1 pt-1 pb-1.5 text-xs text-muted-foreground">
+          Also busy outside BB:{" "}
+          {others.map((other) => `${other.name} avg ${pct(other.cpuSum / Math.max(1, episode.samples))}`).join(" · ")}
         </p>
       )}
     </div>
@@ -371,14 +111,23 @@ function EpisodeList({
   episodes,
   selectedId,
   onSelect,
+  intervalMs,
+  range,
 }: {
   episodes: Episode[];
   selectedId: number | null;
   onSelect: (id: number | null) => void;
+  intervalMs: number;
+  range: Range;
 }) {
   if (episodes.length === 0) {
-    return <EmptyState>No hot episodes in this range.</EmptyState>;
+    return (
+      <EmptyState>
+        No hot spells in the last {range === "24h" ? "24 hours" : "7 days"}. Your Mac stayed cool.
+      </EmptyState>
+    );
   }
+  const now = Date.now();
   return (
     <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
       {episodes.map((episode) => {
@@ -386,29 +135,44 @@ function EpisodeList({
         const top = episode.culprits[0] ?? null;
         const end = episode.endAt ?? episode.lastHotAt;
         return (
-          <li key={episode.id}>
+          <li key={episode.id} id={`hotspot-episode-${episode.id}`} className="scroll-mt-4">
             <button
               type="button"
               aria-expanded={open}
-              className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-state-hover"
+              className={cn(
+                "flex min-h-12 w-full items-center gap-3 px-3 py-2.5 text-left text-sm outline-none hover:bg-state-hover focus-visible:bg-state-hover sm:px-4",
+                open && "bg-state-hover",
+              )}
               onClick={() => onSelect(open ? null : episode.id)}
             >
-              <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-4 shrink-0 text-muted-foreground" />
-              <span className="w-36 shrink-0 tabular-nums">
-                {dayClock(episode.startAt)}
-                {episode.endAt === null ? <span className="ml-1.5 text-destructive">now</span> : null}
+              <Icon
+                name="ChevronRight"
+                className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
+              />
+              <span className="min-w-0 flex-1 sm:flex sm:items-baseline sm:gap-4">
+                <span className="flex shrink-0 items-baseline gap-2 sm:w-52">
+                  <span className="font-medium text-foreground">{dayClockText(episode.startAt, now)}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {episode.endAt === null ? (
+                      <span className="font-medium text-destructive">still hot</span>
+                    ) : (
+                      durationText(end - episode.startAt)
+                    )}
+                  </span>
+                </span>
+                <span className="block min-w-0 truncate text-xs text-muted-foreground sm:flex-1 sm:text-sm sm:text-foreground">
+                  {top === null ? "No BB thread to blame" : threadLabel(top)}
+                </span>
               </span>
-              <span className="hidden w-20 shrink-0 text-muted-foreground sm:inline">
-                {duration(end - episode.startAt)}
+              <span className="flex shrink-0 flex-col items-end gap-0.5 text-xs text-muted-foreground sm:w-36 sm:flex-row sm:items-center sm:justify-end sm:gap-3">
+                <span className="inline-flex items-center gap-1.5">
+                  <span aria-hidden="true" className={cn("size-2 rounded-sm", thermalSwatch(episode.peakThermal))} />
+                  {thermalLabel(episode.peakThermal)}
+                </span>
+                <span className="tabular-nums">peak {pct(episode.peakCpu)}</span>
               </span>
-              <span className="hidden w-28 shrink-0 items-center gap-1.5 text-muted-foreground md:inline-flex">
-                <span className={cn("size-2 rounded-full", thermalClass(episode.peakThermal))} />
-                {thermalLabel(episode.peakThermal)}
-              </span>
-              <span className="w-20 shrink-0 tabular-nums text-muted-foreground">{pct(episode.peakCpu)} CPU</span>
-              <span className="min-w-0 flex-1 truncate">{top === null ? "no thread" : threadLabel(top)}</span>
             </button>
-            {open ? <EpisodeDetail episode={episode} /> : null}
+            {open ? <EpisodeDetail episode={episode} intervalMs={intervalMs} /> : null}
           </li>
         );
       })}
@@ -427,68 +191,134 @@ function EmptyState({ children }: { children: ReactNode }) {
   );
 }
 
-function HotspotPage() {
+function RangeToggle({ range, onChange }: { range: Range; onChange: (range: Range) => void }) {
+  return (
+    <div className="inline-flex rounded-md bg-muted p-0.5" role="group" aria-label="Range">
+      {(["24h", "7d"] as const).map((option) => (
+        <button
+          key={option}
+          type="button"
+          aria-pressed={range === option}
+          onClick={() => onChange(option)}
+          className="h-7 rounded-[5px] px-3 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-sm max-md:pointer-coarse:h-10 max-md:pointer-coarse:px-4 max-md:pointer-coarse:text-sm"
+        >
+          {option === "24h" ? "24 hours" : "7 days"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ChartSkeleton() {
+  return (
+    <div className="space-y-3 rounded-lg border border-border bg-card p-4" aria-label="Loading history">
+      <SkeletonLine className="h-32 w-full rounded-md" />
+      <SkeletonLine className="w-1/2" />
+    </div>
+  );
+}
+
+function HotspotPage({ subPath }: { subPath: string }) {
   const [range, setRange] = useState<Range>("24h");
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const { status } = useStatus();
-  const { timeline, error } = useTimeline(range);
+  const [selectedId, setSelectedId] = useState<number | null>(() => episodeFromSubPath(subPath));
+  const state = useStatus();
+  const { status } = state;
+  const { timeline, error, refetch } = useTimeline(range);
+  const intervalMs = (status?.sampleIntervalSeconds ?? 60) * 1000;
+
+  // A link from the popover selects an episode; widen to a week if it is older than a day.
+  const linked = episodeFromSubPath(subPath);
+  useEffect(() => {
+    if (linked !== null) setSelectedId(linked);
+  }, [linked]);
+  useEffect(() => {
+    if (selectedId === null || timeline === null) return;
+    const found = timeline.episodes.some((episode) => episode.id === selectedId);
+    if (!found && range === "24h" && selectedId === linked) setRange("7d");
+    if (found) {
+      document
+        .getElementById(`hotspot-episode-${selectedId}`)
+        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [selectedId, timeline, range, linked]);
+
+  const latest = status?.latest ?? null;
+  const count = timeline?.episodes.length ?? 0;
 
   return (
     <div className="h-full min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto box-border w-full max-w-4xl space-y-4 px-4 pb-6 pt-3 md:px-5 md:pt-4">
-        <NowStrip status={status} />
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-sm font-medium">History</h2>
-          <div className="flex gap-1" role="group" aria-label="Range">
-            {(["24h", "7d"] as const).map((option) => (
-              <Button
-                key={option}
-                size="sm"
-                variant="ghost"
-                aria-pressed={range === option}
-                onClick={() => setRange(option)}
-              >
-                {option === "24h" ? "24 hours" : "7 days"}
-              </Button>
-            ))}
-          </div>
-        </div>
-        {error === null ? null : (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        )}
-        {timeline === null ? (
-          <EmptyState>Loading history…</EmptyState>
+      <div className="mx-auto box-border w-full max-w-4xl space-y-6 px-4 pb-8 pt-4 md:px-5 md:pt-6">
+        {state.error !== null && status === null ? (
+          <ErrorNote title="Can't read Hotspot right now" detail={state.error} onRetry={state.retry} />
         ) : (
-          <>
+          <VerdictBlock status={status} size="page">
+            {latest === null ? null : (
+              <p className="mt-3 text-xs text-muted-foreground">
+                Load {latest.load.toFixed(2)} per core · checked {clockText(latest.at)} · hot at{" "}
+                {pct(status?.cpuThreshold ?? 80)} CPU
+              </p>
+            )}
+          </VerdictBlock>
+        )}
+
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold text-foreground">CPU and heat</h2>
+            <RangeToggle range={range} onChange={setRange} />
+          </div>
+          {error === null ? null : <ErrorNote title="Couldn't load the history" detail={error} onRetry={refetch} />}
+          {timeline === null ? (
+            error === null ? <ChartSkeleton /> : null
+          ) : (
             <TimelineChart
               timeline={timeline}
               cpuThreshold={status?.cpuThreshold ?? 80}
               selectedId={selectedId}
               onSelect={setSelectedId}
             />
-            <h2 className="text-sm font-medium">Hot episodes</h2>
-            <EpisodeList episodes={timeline.episodes} selectedId={selectedId} onSelect={setSelectedId} />
-          </>
+          )}
+        </section>
+
+        {timeline === null ? null : (
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold text-foreground">
+              Hot spells
+              {count === 0 ? null : <span className="ml-2 font-normal text-muted-foreground">{count}</span>}
+            </h2>
+            <EpisodeList
+              episodes={timeline.episodes}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              intervalMs={intervalMs}
+              range={range}
+            />
+          </section>
         )}
-        <p className="text-xs text-muted-foreground">
-          Hot means thermal pressure above nominal or CPU at the threshold for three samples in a row.
-          Thread CPU is a share of the whole Mac; it comes from <code>ps</code>, which averages over
-          about a minute.
+
+        <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
+          A hot spell starts after three readings in a row with thermal pressure above nominal or CPU at the hot line,
+          and ends after three normal ones. Thread CPU is a share of the whole Mac and comes from <code>ps</code>, which
+          averages over about a minute.
         </p>
       </div>
     </div>
   );
 }
 
-/** One word on the sidebar row while the Mac is hot; nothing otherwise. */
+/** A short word on the sidebar row while the Mac is hot or warm; nothing otherwise. */
 function SidebarBadge() {
   const { status } = useStatus();
-  if (status?.open) return <span className="text-xs font-medium text-destructive">Hot</span>;
-  const thermal = status?.latest?.thermal ?? null;
+  const latest = status?.latest ?? null;
+  if (status?.open) {
+    return (
+      <span className="text-xs font-medium tabular-nums text-destructive">
+        Hot{latest === null ? "" : ` ${pct(latest.cpu)}`}
+      </span>
+    );
+  }
+  const thermal = latest?.thermal ?? null;
   if (thermal !== null && thermal >= 1) {
-    return <span className="text-xs text-amber-500">{thermalLabel(thermal)}</span>;
+    return <span className="text-xs font-medium text-[var(--warning-text)]">Warm</span>;
   }
   return null;
 }
@@ -508,11 +338,11 @@ function HotspotToaster() {
     toast.warning("Your Mac is running hot", {
       description:
         top === null
-          ? `Since ${clock(payload.startAt)}. No BB thread is the main cause.`
-          : `Since ${clock(payload.startAt)}. Top thread: ${threadLabel(top)}.`,
+          ? `Since ${clockText(payload.startAt)}. No BB thread is the main cause.`
+          : `Since ${clockText(payload.startAt)}, mostly from ${threadLabel(top)}.`,
       action:
         top === null
-          ? { label: "Hotspot", onClick: () => navigate.toPluginPanel("hotspot") }
+          ? { label: "See why", onClick: () => navigate.toPluginPanel("hotspot") }
           : { label: "Open thread", onClick: () => navigate.toThread(top.threadId) },
     });
   });
