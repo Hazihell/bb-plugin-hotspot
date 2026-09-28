@@ -22,9 +22,12 @@ a figure never appears without its label. Hover for the full line. Clicking
 it opens a popover that leads with the verdict ("Running hot since 2:13 PM,
 mostly <thread>"), then a numbers row (heat, CPU, memory with swap, load per
 core, each with a line for the last hour and colour only when it crosses a
-line), then the busiest threads with CPU and memory, where each one can be opened, have its
-running turn stopped, or have its work processes killed after a
-confirmation that names what gets SIGTERM and lists what is spared. On a
+line), then the busiest threads, one line each with CPU and memory. Clicking a
+title opens the thread; its "…" button unfolds the process count, Stop turn
+and Kill processes…, which kills its work processes after a confirmation
+that names what gets SIGTERM and lists what is spared. Threads under 1% CPU
+and 1 GB of memory fold into an "N idle threads" line, and only the thread
+list scrolls, so the verdict, numbers and last hot spells stay in view. On a
 phone (BB Connect) the indicator sits in the sidebar drawer's footer, the
 popover opens as a bottom sheet with 44px targets, and the drawer closes
 when you jump to a thread or the page.

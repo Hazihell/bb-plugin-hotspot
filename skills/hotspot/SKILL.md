@@ -112,7 +112,9 @@ kernel memory pressure. Hovering shows the full line; clicking opens a
 popover that leads with a verdict (running cool, warming up, working hard
 or running hot, and the thread to blame), then heat, CPU, memory (with
 swap) and load per core with a line for the last hour, then the five
-busiest threads with CPU and memory (Open, Stop turn, Kill processes…), other
+busiest threads with CPU and memory, one line each (the title opens the
+thread; "…" unfolds Stop turn and Kill processes…; threads under 1% CPU and
+1 GB fold into "N idle threads"), other
 busy processes, the last three episodes ("hot spells" in the UI; each
 opens on the Hotspot page) and a link to the page. The page adds a memory
 plot under the CPU timeline. On a phone the
