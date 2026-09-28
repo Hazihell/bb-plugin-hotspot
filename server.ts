@@ -43,7 +43,15 @@ import {
   parseWhen,
   summarizeWindow,
 } from "./lib/report";
-import { EPISODE_OPENED, type EpisodeOpenedSignal, LIVE, type LiveSignal, SAMPLED } from "./lib/signals";
+import {
+  EPISODE_OPENED,
+  type EpisodeOpenedSignal,
+  LIVE,
+  type LiveSignal,
+  RUNNING_CHANGED,
+  type RunningChangedSignal,
+  SAMPLED,
+} from "./lib/signals";
 import { TOP_THREADS, type TakeReading, createSampler, startupDelay } from "./lib/sample";
 import type { EpisodeView, Sample, SampleView } from "./lib/schemas";
 import {
@@ -278,6 +286,17 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
   const watched = () => monotonic() < watchedUntil;
   /** Ends the sampler's current sleep; a no-op while it is reading. */
   let wakeSampler: () => void = () => undefined;
+
+  // A thread starting or ending a turn changes whether the popover offers
+  // Stop turn. Only threads the popover can be showing are announced.
+  function announceRunning(threadId: string, running: boolean): void {
+    if (!(latestSample()?.threads.some((entry) => entry.threadId === threadId) ?? false)) return;
+    const payload: RunningChangedSignal = { threadId, running };
+    bb.realtime.publish(RUNNING_CHANGED, payload);
+  }
+  bb.events.on("thread.active", ({ thread }) => announceRunning(thread.id, true));
+  bb.events.on("thread.idle", ({ thread }) => announceRunning(thread.id, false));
+  bb.events.on("thread.failed", ({ thread }) => announceRunning(thread.id, false));
 
   /**
    * A fresh-enough reading for "now": the last one, or a new one that peeks

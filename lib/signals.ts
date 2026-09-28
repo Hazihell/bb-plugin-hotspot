@@ -13,6 +13,16 @@ export const SAMPLED = "sampled";
  */
 export const LIVE = "live";
 export const EPISODE_OPENED = "episode-opened";
+/**
+ * A thread shown in the latest reading started or ended a turn; the popover
+ * refetches its overview to offer or withdraw Stop turn.
+ */
+export const RUNNING_CHANGED = "running-changed";
+
+export interface RunningChangedSignal {
+  threadId: string;
+  running: boolean;
+}
 
 export type LiveSignal = SampleView;
 

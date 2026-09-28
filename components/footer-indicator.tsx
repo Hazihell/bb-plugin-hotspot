@@ -25,7 +25,7 @@ import {
 import { bytesText, thermalLabel } from "../lib/labels";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { cpuText, dayClockText, durationText, pct, splitIdle, threadMeta } from "../lib/present";
-import { SAMPLED } from "../lib/signals";
+import { RUNNING_CHANGED, SAMPLED } from "../lib/signals";
 import { cn } from "../lib/utils";
 import { type StatusState, useStatus } from "../hooks/use-status";
 import { ErrorNote, FlameIcon, SkeletonLine, VerdictBlock, thermalSwatch } from "./heat";
@@ -303,6 +303,7 @@ function useOverview() {
   }, [rpc]);
   useEffect(refetch, [refetch]);
   useRealtime(SAMPLED, refetch);
+  useRealtime(RUNNING_CHANGED, refetch);
   return { overview, refetch };
 }
 

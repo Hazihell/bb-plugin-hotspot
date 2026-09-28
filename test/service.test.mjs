@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createHotspot } from "../server.ts";
 import { startupDelay } from "../lib/sample.ts";
-import { LIVE, SAMPLED } from "../lib/signals.ts";
+import { LIVE, RUNNING_CHANGED, SAMPLED } from "../lib/signals.ts";
 import { createStore } from "../lib/store.ts";
 
 const tick = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -157,3 +157,20 @@ test("setting the wall clock back an hour neither stalls live readings, stores a
   }
 });
 
+test("a shown thread starting or ending a turn is announced; other threads are not", async () => {
+  const shown = { threadId: "thr_shownthread", cpu: 40, processes: 2, memBytes: null };
+  const sampler = recordingSampler(50, [shown]);
+  const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
+  harness.sdk.stub("threads.get", async ({ threadId }) => ({ id: threadId, title: "Shown", titleFallback: null, status: "idle" }));
+  await createHotspot(bb, { takeReading: sampler.takeReading });
+  await harness.runCli(["status"]);
+  const thread = (id) => ({ thread: { id } });
+  await harness.emitThreadEvent("thread.active", thread("thr_shownthread"));
+  await harness.emitThreadEvent("thread.idle", { ...thread("thr_shownthread"), lastAssistantText: null });
+  await harness.emitThreadEvent("thread.active", thread("thr_otherthread"));
+  const announced = harness.inspection.realtimeSignals.filter((signal) => signal.channel === RUNNING_CHANGED);
+  assert.deepEqual(announced.map((signal) => signal.payload), [
+    { threadId: "thr_shownthread", running: true },
+    { threadId: "thr_shownthread", running: false },
+  ]);
+});
