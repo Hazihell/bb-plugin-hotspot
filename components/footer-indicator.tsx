@@ -343,6 +343,16 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
       .finally(() => setBusy(null));
   };
 
+  // A thread already mid-turn can climb into the list between stored
+  // samples: ask again which shown threads run a turn when the set changes.
+  const shownIds = (latest?.threads ?? []).map((thread) => thread.threadId).sort().join(" ");
+  const fetchedFor = useRef(shownIds);
+  useEffect(() => {
+    if (shownIds === fetchedFor.current) return;
+    fetchedFor.current = shownIds;
+    refetch();
+  }, [shownIds, refetch]);
+
   if (plan !== null) {
     return <KillConfirm plan={plan} onDone={() => setPlan(null)} />;
   }
