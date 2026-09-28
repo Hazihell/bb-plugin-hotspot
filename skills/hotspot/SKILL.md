@@ -5,7 +5,9 @@ description: Answer when the user's Mac ran hot and which BB thread caused it, u
 
 # Hotspot
 
-Hotspot samples the Mac BB's server runs on, every 60 seconds by default: the
+Hotspot stores a sample of the Mac BB's server runs on every 60 seconds by
+default (and, only while a BB window is on screen, shows a live reading every
+2 seconds that is never stored): the
 macOS thermal pressure level, machine-wide CPU, load per core, memory (used
 %, app, wired and compressed memory, swap used, and the kernel's memory
 pressure level: normal, warn or critical), the five BB threads using the
@@ -43,7 +45,9 @@ bb hotspot episodes [--since 24h] [--until <time>] [--limit 10] [--json]
 bb hotspot kill <threadId> [--yes] [--json]
 ```
 
-`status` prints the latest sample (including a memory line and each
+`status` takes a fresh reading (or reuses one under 5 seconds old), so its
+CPU figures cover the time since the previous reading rather than the last
+stored minute. It prints the reading (including a memory line and each
 thread's memory) and the episode in progress, if any; `--json` carries the
 full memory reading under `latest.memory` and `memBytes` per thread.
 `episodes` lists episodes newest first; `--limit` is 1–50 and the JSON form
@@ -135,10 +139,12 @@ Set with `bb plugin config hotspot set <key> <value>`:
 
 ## Limits
 
-- Thread and process CPU is a share of the whole Mac (all cores = 100%). It
-  comes from `ps`, which on macOS is a decaying average over about a minute,
-  so a burst shows up late and fades slowly. Machine CPU is exact over the
-  sample interval.
+- Thread and process CPU is a share of the whole Mac (all cores = 100%):
+  the CPU time each process used between two readings, so a stored sample
+  covers its whole interval. A process that started since the previous
+  reading, and every process in the first sample after a load, falls back to
+  `ps` `%cpu`, a decaying average over about a minute. Machine CPU is exact
+  over the interval.
 - Memory used is Activity Monitor's Memory Used (app + wired + compressed)
   over physical memory, read from `vm_stat` and `sysctl`; on Linux it is
   total minus `MemAvailable`, with no pressure level. A thread's memory is

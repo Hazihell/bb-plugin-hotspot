@@ -17,9 +17,10 @@ watching Activity Monitor.
 
 ## How it works
 
-Hotspot samples once a minute using `ps`, `notifyutil` and the kernel's CPU
-counters, and keeps seven days of history in its own database on the BB
-server. Sampling only reads, and it needs no account, root access or
+Hotspot stores a sample once a minute using `ps`, `notifyutil` and the
+kernel's CPU counters, and keeps seven days of history in its own database
+on the BB server. While a BB window is on screen, the footer also updates
+every 2 seconds from live readings that are never stored. Sampling only reads, and it needs no account, root access or
 network service. The only processes it ever signals are the ones you
 confirm in a kill plan: a thread's own work, never its agent, BB, your apps
 or system processes. Turn that off with the `allowKill` setting.

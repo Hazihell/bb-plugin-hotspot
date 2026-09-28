@@ -2,7 +2,7 @@
 
 Tells you when your Mac ran hot and which BB thread did it.
 
-A background service samples every minute: the macOS thermal pressure level
+A background service stores a sample every minute: the macOS thermal pressure level
 (`notifyutil`), machine-wide CPU and load, memory (used %, app, wired and
 compressed memory, swap used and the kernel's memory pressure level, from
 `vm_stat` and `sysctl`), and one `ps` table, rolled up into the five BB
@@ -12,6 +12,17 @@ samples in a row (thermal pressure above nominal, or CPU at 80% of all cores)
 open a **hot episode**; three normal ones close it. Each episode keeps its
 culprit threads, ranked by CPU summed across the episode. When one opens, BB
 shows a toast naming the top thread.
+
+While a BB window is on screen, the same service also takes a live reading
+every 2 seconds and pushes it to the footer, the popover and the page's
+numbers. Each open window renews a 10-second watch lease every 4 seconds
+while it is visible; when every lease lapses, only the minute samples run.
+Live readings are never stored and never open or close an episode. Thread
+and process CPU is the CPU time each process used since the previous
+reading (`ps` `time`, keyed by pid and start time so a reused pid is not a
+spike), not `ps`'s minute-long decaying `%cpu`, so a stored sample measures
+its whole minute and a live one its last 2 seconds. One reading costs about
+30 ms and one `ps`.
 
 The sidebar footer always shows Hotspot's flame and labelled figures, `CPU
 16%` and `MEM 62%`. The flame turns amber or red with the heat, and a word
@@ -63,7 +74,7 @@ signalling processes itself. Set `allowKill` to `false` to remove the action.
 `server.ts` is the sampler loop, RPC, tool and CLI; `lib/` holds the pieces
 with tests: `procs.ts` (process table and thread attribution), `thermal.ts`,
 `memory.ts` (memory and swap),
-`sample.ts`, `episodes.ts` (the detector, a pure state machine), `store.ts`
+`sample.ts` (one reading over the live and stored windows), `episodes.ts` (the detector, a pure state machine), `store.ts`
 (the plugin's SQLite database), `report.ts` (text and timeline shaping),
 `kill.ts` (the kill planner and apply) and `footer.ts` (the footer wording
 and how it narrows).
