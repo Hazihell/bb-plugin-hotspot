@@ -94,6 +94,8 @@ const SYSTEM_PATH = /^(?:\/System\/|\/usr\/libexec\/|\/usr\/sbin\/|\/sbin\/|\/Li
  * unless it runs headless (a test browser).
  */
 const APP_BUNDLE = /^\/(?:(?:(?!\s\/)[^/])+\/)*?(?:(?!\s\/)[^/])+\.app\/Contents\//;
+/** Python.framework runs every script through its own Python.app; that is an interpreter, not an app. */
+const INTERPRETER_BUNDLE = /^\S*\/Python\.framework\/Versions\/[^/\s]+\/Resources\/Python\.app\/Contents\/MacOS\/Python(?:\s|$)/;
 /** Terminal emulators and multiplexers: what runs inside them is the user's, wherever they are installed. */
 const TERMINALS = new Set(["alacritty", "kitty", "wezterm", "wezterm-gui", "wezterm-mux-server", "ghostty", "iterm2", "terminal", "tmux", "screen", "zellij"]);
 const HEADLESS = /\s--headless\b|\s--remote-debugging-(?:port|pipe)\b/;
@@ -161,7 +163,9 @@ export function wallReason(row: KillRow, context: PlanContext): string | null {
   if (row.uid !== context.uid) return "owned by another user";
   if (SYSTEM_PATH.test(row.argv.split(/\s/, 1)[0] ?? "")) return "a system process";
   if (TERMINALS.has(executable(row).toLowerCase()) || TERMINALS.has(row.name.toLowerCase())) return "a terminal, not work the thread started";
-  if (APP_BUNDLE.test(row.argv) && !HEADLESS.test(row.argv)) return "an app, not work the thread started";
+  if (APP_BUNDLE.test(row.argv) && !HEADLESS.test(row.argv) && !INTERPRETER_BUNDLE.test(row.argv)) {
+    return "an app, not work the thread started";
+  }
   if (isInteractiveShell(row)) return "an interactive terminal shell";
   return null;
 }

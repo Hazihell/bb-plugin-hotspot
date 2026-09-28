@@ -278,6 +278,7 @@ test("an app bundle anywhere is a wall; an argument naming a bundle is not", () 
     851: line(851, 850, "/bin/zsh -c cargo build"),
     860: line(860, 1, `/opt/homebrew/bin/node /Users/me/tools/Fake.app/Contents/x.js BB_THREAD_ID=${THREAD}`, { cpu: 5 }),
     870: line(870, 1, `/Users/me/Library/Caches/ms-playwright/chromium-1187/chrome-mac/Chromium.app/Contents/MacOS/Chromium --headless BB_THREAD_ID=${THREAD}`),
+    880: line(880, 1, `/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m http.server 8899 BB_THREAD_ID=${THREAD}`),
     310: null,
     311: null,
     312: null,
@@ -287,7 +288,7 @@ test("an app bundle anywhere is a wall; an argument naming a bundle is not", () 
   const reasons = Object.fromEntries(plan.excluded.map((entry) => [entry.pid, entry.reason]));
   assert.match(reasons[850], /an app/);
   assert.match(reasons[851], /under zed/);
-  assert.deepEqual(plan.targets.map((target) => target.pid).sort(), [860, 870]);
+  assert.deepEqual(plan.targets.map((target) => target.pid).sort(), [860, 870, 880]);
 });
 
 test("a thread with no work of its own plans nothing", () => {
