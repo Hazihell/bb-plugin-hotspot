@@ -60,12 +60,19 @@ Set with `bb plugin config hotspot set <key> <value>`:
   sample interval.
 - Thermal pressure is a level (nominal, moderate, heavy, trapping, sleeping),
   not a temperature; degree readings need root. On Linux it is unknown and
-  only the CPU rule applies.
-- A process belongs to a thread through its `BB_THREAD_ID` environment
-  variable, a `thr_…` worktree path in its arguments, or its nearest ancestor
-  with either. Processes owned by other users, such as root daemons, never
-  map to a thread.
+  only the CPU rule applies; thread attribution there reads
+  `/proc/<pid>/environ`. If `ps` fails, samples still record CPU and load
+  with no threads.
+- A process belongs to a thread through `BB_THREAD_ID` in its own
+  environment, else a `thr_…` id that is a folder directly under a BB
+  `worktrees/` or `workspaces/` directory in its arguments, else its nearest
+  ancestor with either. A bare `thr_…` in a command line (`grep thr_x`) or a
+  worktree path in another variable (`PWD`) does not count. Processes owned
+  by other users, such as root daemons, never map to a thread.
+- Thread titles are looked up when shown, so a renamed thread shows its
+  current title everywhere, and an id BB no longer knows is left out.
 - Only the machine the BB server runs on is sampled, never remote hosts.
 - Nothing is sampled while the Mac sleeps or the plugin is off; a gap longer
-  than three intervals ends an open episode.
+  than three intervals (the larger of the old and new interval, if the
+  setting changed) ends an open episode.
 - Hotspot only reads. It never signals, renices or stops a process.
