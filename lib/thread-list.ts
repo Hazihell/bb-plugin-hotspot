@@ -83,20 +83,20 @@ function insertByCpu(order: string[], id: string, cpu: (id: string) => number): 
 }
 
 /**
- * Swaps neighbours whose CPU differs by more than the margin until none
- * does. "Leads by more than the margin" is transitive, so every swap undoes
- * one such inversion and the passes end.
+ * Builds the order top down. Each slot goes to the first remaining thread,
+ * in the old order, that no remaining thread leads by more than the margin.
+ * A thread thus climbs over any row it clearly leads, not only its
+ * neighbour, and rows within the margin of each other keep their order. The
+ * remaining thread with the most CPU always qualifies, so every slot fills.
  */
 function rerank(order: string[], cpu: (id: string) => number): string[] {
-  const next = [...order];
-  for (let swapped = true; swapped; ) {
-    swapped = false;
-    for (let index = 0; index + 1 < next.length; index++) {
-      if (cpu(next[index + 1]) > cpu(next[index]) + SWAP_MARGIN) {
-        [next[index], next[index + 1]] = [next[index + 1], next[index]];
-        swapped = true;
-      }
-    }
+  const remaining = [...order];
+  const next: string[] = [];
+  while (remaining.length > 0) {
+    const top = Math.max(...remaining.map(cpu));
+    const pick = remaining.find((threadId) => top <= cpu(threadId) + SWAP_MARGIN) ?? remaining[0];
+    next.push(pick);
+    remaining.splice(remaining.indexOf(pick), 1);
   }
   return next;
 }
@@ -133,7 +133,8 @@ export function nextList<T extends ListThread>(
   // CPU as ranked: a missing thread's is unknown, so it ranks as none.
   const cpu = (threadId: string) => (inReading.has(threadId) ? tracked[threadId].entry.cpu : 0);
 
-  if (frozen) {
+  // An empty list has nothing to hold still: it fills even while frozen.
+  if (frozen && state.shown.length + state.folded.length > 0) {
     // Only threads already on screen are kept; newcomers wait to be read again.
     const kept: Record<string, Tracked<T>> = {};
     for (const threadId of [...state.shown, ...state.folded]) kept[threadId] = tracked[threadId];

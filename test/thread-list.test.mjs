@@ -67,6 +67,22 @@ test("a lead beyond the margin swaps, at most once per rerank interval", () => {
   assert.deepEqual(shown(state), ["b", "c", "a"]);
 });
 
+test("a staircase of small steps still resolves: a row climbs over any row it clearly leads", () => {
+  let state = feed([[t("a", 30), t("b", 26), t("c", 22), t("d", 18)]]);
+  assert.deepEqual(shown(state), ["a", "b", "c", "d"]);
+  // Every neighbour is within the margin, but d leads a by 12 points and c leads a by 8.
+  state = feed(repeat(10, [t("a", 10), t("b", 14), t("c", 18), t("d", 22)]), { from: state, start: RERANK_MS });
+  // c and d, within the margin of each other, keep their order; both clear a and b.
+  assert.deepEqual(shown(state), ["c", "d", "a", "b"]);
+});
+
+test("five rows: clear leads reorder, close ones keep their places", () => {
+  let state = feed([[t("a", 50), t("b", 40), t("c", 30), t("d", 20), t("e", 10)]]);
+  // e jumps to the top, c and d trade places within the margin, b drops below them clearly.
+  state = nextList(state, [t("e", 70), t("a", 50), t("d", 33), t("c", 30), t("b", 12)], RERANK_MS, false);
+  assert.deepEqual(shown(state), ["e", "a", "c", "d", "b"]);
+});
+
 test("numbers update in place without a reorder", () => {
   let state = feed([[t("a", 50), t("b", 40)]]);
   state = nextList(state, [t("a", 52), t("b", 47)], 2_000, false);
@@ -148,6 +164,11 @@ test("while frozen nothing moves, joins or leaves; numbers still update", () => 
   // Let go: the held changes land at the next reading.
   state = nextList(state, [t("b", 95), t("d", 70), t("c", 30)], 70_000, false);
   assert.deepEqual([shown(state), folded(state)], [["b", "d", "c"], []]);
+});
+
+test("a list frozen while empty still fills", () => {
+  const state = feed([[], [t("a", 20), t("b", 0.1)]], { frozen: () => true });
+  assert.deepEqual([shown(state), folded(state)], [["a"], ["b"]]);
 });
 
 test("an unfolded row's thread keeps its place however its numbers move while frozen", () => {
