@@ -18,7 +18,9 @@
  * shell, Hotspot's own chain) ends the thread's claim, so nothing below an
  * app a thread happened to launch belongs to the thread. Only a process BB
  * launched (the agent) or a detached one carrying its own BB_THREAD_ID can
- * pass the thread down. Walls and the agent are never targets. A process
+ * pass the thread down. Walls and the agent are never targets, and the
+ * agent is the whole chain from BB down to its first work shell (wrappers,
+ * relaunches) plus the helpers it runs directly (MCP servers). A process
  * that is the parent of any of those is also spared, so the shell running
  * `bb hotspot kill` survives its own command, and so is the rest of the
  * command a `bb` CLI call belongs to (`bb … | head`).
@@ -152,6 +154,27 @@ export function wallReason(row: KillRow, context: PlanContext): string | null {
   return null;
 }
 
+/** npx, `npm exec`, pnpm/yarn/bun dlx, bunx, uvx, `pipx run`, env: they start the thing they name. */
+export function isPackageRunner(row: Pick<KillRow, "argv">): boolean {
+  if (["npx", "pnpx", "bunx", "uvx", "env"].includes(executable(row))) return true;
+  return /(?:^|[\s/])(?:npx-cli\.js|npm(?:-cli\.js)?\s+exec|pnpm(?:\.c?js)?\s+(?:dlx|exec)|yarn(?:\.c?js)?\s+dlx|bun\s+x|pipx\s+run)(?=\s|$)/.test(row.argv);
+}
+
+/**
+ * One step down from a process in the agent chain: the child is still the
+ * agent (`chain`), the start of the thread's work (`work`), or a helper the
+ * agent runs for itself (`helper`: an MCP server, ripgrep). A shell or a
+ * package runner in the chain is a wrapper, so what it starts is the next
+ * link (npx → sh -c gemini → node gemini). A process that starts its own
+ * executable again is relaunching itself (Gemini CLI's node → node).
+ */
+function hop(parent: KillRow, child: KillRow): "chain" | "work" | "helper" {
+  if (isShell(parent) || isPackageRunner(parent)) return "chain";
+  if (isShell(child)) return "work";
+  if (executable(child) === executable(parent)) return "chain";
+  return "helper";
+}
+
 /** Who may claim a process for a kill, found by walking up to the nearest wall, BB or launchd. */
 interface Ownership {
   /** The nearest thread id on the path, or null (none, or a wall was in the way). */
@@ -193,10 +216,30 @@ export function planKill(rows: readonly KillRow[], threadId: string, context: Pl
   const members = rows.filter((row) => owner(row.pid) === threadId);
   const memberPids = new Set(members.map((row) => row.pid));
 
+  // Under a process BB launched, walk down from it: everything up to the
+  // first work shell is the agent, and its helpers are spared with them.
   const reasons = new Map<number, string>();
   for (const row of members) {
     const ownership = owners.get(row.pid);
-    if (ownership?.byBb && ownership.root === row) reasons.set(row.pid, "the thread's agent (launched by BB)");
+    if (!ownership?.byBb || ownership.root === null) continue;
+    if (ownership.root === row) {
+      reasons.set(row.pid, "the thread's agent (launched by BB)");
+      continue;
+    }
+    const path: KillRow[] = [];
+    for (let node: KillRow | undefined = row; node !== undefined && node !== ownership.root && path.length < 64; node = byPid.get(node.ppid)) {
+      path.push(node);
+    }
+    path.reverse();
+    let parent = ownership.root;
+    let role: "chain" | "work" | "helper" = "chain";
+    for (const node of path) {
+      role = hop(parent, node);
+      if (role !== "chain") break;
+      parent = node;
+    }
+    if (role === "chain") reasons.set(row.pid, "the thread's agent, or a launcher it runs through");
+    if (role === "helper") reasons.set(row.pid, "a helper the agent runs for itself (MCP server or tool)");
   }
   // Processes the thread id reaches only through a wall are listed, not
   // targeted, so the plan says why a terminal or an app's helper is safe.

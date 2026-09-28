@@ -137,6 +137,65 @@ test("an interactive shell is recognised by a login dash or by having no command
   assert.equal(shell("node server.js"), false);
 });
 
+test("a relaunching agent and its MCP servers are spared; only work under its shells is targeted", () => {
+  // Gemini CLI: BB starts node, which relaunches itself with more heap.
+  const gemini = "/opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js";
+  const stdout = table({
+    300: line(300, 200, `node ${gemini} --experimental-acp BB_THREAD_ID=${THREAD}`),
+    301: line(301, 300, `node --max-old-space-size=8192 ${gemini} --experimental-acp`, { cpu: 12 }),
+    302: line(302, 301, "uvx mcp-server-fetch", { cpu: 1 }),
+    303: line(303, 302, "python -m mcp_server_fetch"),
+    304: line(304, 301, "/opt/homebrew/bin/rg --json needle"),
+    310: line(310, 301, "/bin/bash -c npm run dev"),
+    311: line(311, 310, "node /Users/me/app/node_modules/.bin/vite", { cpu: 50 }),
+    312: null,
+    313: null,
+    320: null,
+    321: null,
+    330: null,
+    331: null,
+    340: null,
+    341: null,
+    342: null,
+  });
+  const plan = planKill(rowsOf(stdout), THREAD, context);
+  assert.deepEqual(plan.targets.map((target) => target.pid), [311, 310]);
+  const reasons = Object.fromEntries(plan.excluded.map((entry) => [entry.pid, entry.reason]));
+  assert.match(reasons[300], /agent \(launched by BB\)/);
+  assert.match(reasons[301], /agent, or a launcher/);
+  assert.match(reasons[302], /helper/);
+  assert.match(reasons[303], /helper/);
+  assert.match(reasons[304], /helper/);
+});
+
+test("an agent started through npx is spared down to its own shells", () => {
+  const stdout = table({
+    300: line(300, 200, `node /opt/homebrew/lib/node_modules/npm/bin/npx-cli.js -y @google/gemini-cli BB_THREAD_ID=${THREAD}`),
+    301: line(301, 300, "sh -c gemini --yolo"),
+    302: line(302, 301, "node /Users/me/.npm/_npx/1a2b/node_modules/.bin/gemini --yolo", { cpu: 8 }),
+    303: line(303, 302, "npm exec @playwright/mcp@latest"),
+    304: line(304, 303, "/Users/me/Library/Caches/ms-playwright/chromium-1187/chrome-mac/Chromium.app/Contents/MacOS/Chromium --headless"),
+    310: line(310, 302, "/bin/zsh -c pytest -q"),
+    311: line(311, 310, "python -m pytest -q", { cpu: 70 }),
+    312: null,
+    313: null,
+    320: null,
+    321: null,
+    330: null,
+    331: null,
+    340: null,
+    341: null,
+    342: null,
+  });
+  const plan = planKill(rowsOf(stdout), THREAD, context);
+  assert.deepEqual(plan.targets.map((target) => target.pid), [311, 310]);
+  const reasons = Object.fromEntries(plan.excluded.map((entry) => [entry.pid, entry.reason]));
+  assert.match(reasons[301], /launcher/);
+  assert.match(reasons[302], /launcher/);
+  assert.match(reasons[303], /helper/);
+  assert.match(reasons[304], /helper/);
+});
+
 test("a thread with no work of its own plans nothing", () => {
   const plan = planKill(rowsOf(table()), "thr_nothing0001", context);
   assert.deepEqual(plan, { threadId: "thr_nothing0001", targets: [], excluded: [] });
