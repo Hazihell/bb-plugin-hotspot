@@ -1,7 +1,14 @@
 {
   "name": "bb-plugin-hotspot",
   "version": "0.1.0",
+  "description": "Records when the Mac runs hot and which BB thread caused it.",
+  "license": "MIT",
   "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --no-warnings --import ./test/loader.mjs --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "bb plugin build"
+  },
   "engines": {
     "bb": ">=0.44",
     "bbPluginSdk": ">=0.5.29"
@@ -46,7 +53,5 @@
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.4.0",
     "vaul": "^1.1.2"
-  },
-  "description": "Records when the Mac runs hot and which BB thread caused it.",
-  "license": "MIT"
+  }
 }
