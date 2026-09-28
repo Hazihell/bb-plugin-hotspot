@@ -120,7 +120,7 @@ export function FooterIndicator() {
     cpuThreshold: status?.cpuThreshold ?? 80,
   });
   const tooltip = state.error !== null && status === null ? `Hotspot: can't read the sampler (${state.error})` : view.tooltip;
-  // A bare percentage next to other footer readouts is ambiguous; say what it is while calm.
+  // A bare percentage next to other footer readouts is ambiguous; say what it is while calm and there is room.
   const calmCpu = view.level === null && view.title === null && view.cpu !== "—";
   return createPortal(
     <Popover open={open} onOpenChange={setOpen}>
@@ -131,7 +131,7 @@ export function FooterIndicator() {
           aria-label={tooltip}
           data-testid="hotspot-footer-indicator"
           className={cn(
-            "flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-xs tabular-nums text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring max-md:pointer-coarse:text-sm",
+            "@container/hotspot flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-xs tabular-nums text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring max-md:pointer-coarse:text-sm",
             TOUCH,
           )}
         >
@@ -146,7 +146,7 @@ export function FooterIndicator() {
             {view.level === null ? null : <span className="shrink-0">{view.level} ·</span>}
             <span className="shrink-0">
               {view.cpu}
-              {calmCpu ? <span className="ml-1 text-muted-foreground/80">CPU</span> : null}
+              {calmCpu ? <span className="ml-1 hidden text-muted-foreground/80 @[5.5rem]/hotspot:inline">CPU</span> : null}
             </span>
             {view.title === null ? null : <span className="min-w-0 truncate">· {view.title}</span>}
           </span>
