@@ -73,7 +73,6 @@ export function absorb(episode: Episode, sample: Sample): Episode {
   for (const thread of sample.threads) {
     const entry = culprits.get(thread.threadId) ?? {
       threadId: thread.threadId,
-      title: null,
       cpuSum: 0,
       samples: 0,
       peakCpu: 0,
@@ -81,7 +80,6 @@ export function absorb(episode: Episode, sample: Sample): Episode {
     entry.cpuSum = round(entry.cpuSum + thread.cpu);
     entry.samples += 1;
     entry.peakCpu = Math.max(entry.peakCpu, thread.cpu);
-    entry.title = thread.title ?? entry.title;
     culprits.set(thread.threadId, entry);
   }
   const others = new Map(episode.others.map((entry) => [entry.name, { ...entry }]));

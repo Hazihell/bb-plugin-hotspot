@@ -22,7 +22,16 @@ import {
   summarizeWindow,
 } from "./lib/report";
 import { EPISODE_OPENED, type EpisodeOpenedSignal, SAMPLED } from "./lib/signals";
-import { createSampler } from "./lib/sample";
+import { TOP_THREADS, createSampler } from "./lib/sample";
+import type { EpisodeView, SampleView } from "./lib/schemas";
+import {
+  createThreadDirectory,
+  idsToResolve,
+  isNotFound,
+  named,
+  viewEpisode,
+  viewSample,
+} from "./lib/threads";
 import { DAY_MS, MIGRATIONS, createStore } from "./lib/store";
 
 const TITLE_TTL_MS = 10 * 60_000;
@@ -36,18 +45,13 @@ const RANGE_SPECS: Record<Range, { spanMs: number; buckets: number }> = {
   "7d": { spanMs: 7 * DAY_MS, buckets: 336 },
 };
 const TIMELINE_EPISODE_LIMIT = 200;
+/** Culprits the page lists per episode. */
+const CULPRITS_SHOWN = 10;
 /** Output ceilings for the agent tool and the CLI (characters). */
 const TOOL_MAX_CHARS = 8_000;
 const CLI_MAX_CHARS = 32_000;
 const WHEN_HELP =
   "`90m`, `3h`, `2d`, `1w` back from now; `15:00` for the most recent 15:00 (server-local); or an ISO date/time";
-
-/** True only for BB's definite "no such thread" answer (HTTP 404, thread_not_found). */
-function isNotFound(error: unknown): boolean {
-  const fields = (error ?? {}) as { status?: unknown; code?: unknown };
-  if (fields.status === 404 || fields.code === "thread_not_found") return true;
-  return /\b404\b|thread_not_found|thread not found/i.test(String(error));
-}
 
 /** Resolves when `ms` elapses or `signal` aborts, whichever comes first. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -94,39 +98,35 @@ export default async function plugin(bb: BbPluginApi) {
   bb.storage.migrate(db, MIGRATIONS);
   const store = createStore(db);
 
-  // Thread titles change rarely and the same few threads recur every
-  // sample, so each id is looked up at most once per TTL. Only answers are
-  // cached (found, or definitely not found); a failed request is retried
-  // on the next sample and meanwhile keeps the id without a title.
-  const threadCache = new Map<string, { exists: boolean; title: string | null; at: number }>();
-  async function resolveThreads(threadIds: string[]): Promise<Map<string, string | null>> {
-    const now = Date.now();
-    if (threadCache.size > 1_000) threadCache.clear();
-    const failed = new Set<string>();
-    await Promise.all(
-      threadIds.map(async (threadId) => {
-        const cached = threadCache.get(threadId);
-        if (cached !== undefined && now - cached.at < TITLE_TTL_MS) return;
-        try {
-          const thread = await bb.sdk.threads.get({ threadId });
-          const title = thread.title ?? thread.titleFallback ?? null;
-          threadCache.set(threadId, { exists: true, title, at: now });
-        } catch (error) {
-          if (isNotFound(error)) threadCache.set(threadId, { exists: false, title: null, at: now });
-          else failed.add(threadId);
-        }
-      }),
-    );
-    const resolved = new Map<string, string | null>();
-    for (const threadId of threadIds) {
-      const entry = failed.has(threadId) ? undefined : threadCache.get(threadId);
-      if (entry?.exists !== false) resolved.set(threadId, entry?.title ?? null);
-    }
-    return resolved;
+  // Titles and existence are looked up when shown, never stored, so every
+  // surface names threads the same way (lib/threads.ts).
+  const directory = createThreadDirectory(
+    async (threadId) => {
+      try {
+        const thread = await bb.sdk.threads.get({ threadId });
+        return { title: thread.title ?? thread.titleFallback ?? null };
+      } catch (error) {
+        if (isNotFound(error)) return null;
+        throw error;
+      }
+    },
+    { ttlMs: TITLE_TTL_MS },
+  );
+
+  async function viewEpisodes(episodes: Episode[], limit: number): Promise<EpisodeView[]> {
+    const known = await directory.resolve(episodes.flatMap((episode) => idsToResolve(episode.culprits, limit)));
+    return episodes.map((episode) => viewEpisode(episode, known, limit));
+  }
+
+  async function viewLatest(): Promise<SampleView | null> {
+    const latest = store.latest();
+    if (latest === null) return null;
+    const known = await directory.resolve(idsToResolve(latest.threads, TOP_THREADS));
+    return viewSample(latest, known, TOP_THREADS);
   }
 
   let processErrorLogged = false;
-  const takeSample = createSampler(resolveThreads, {
+  const takeSample = createSampler({
     // Logged once per load: a missing `ps` fails every sample the same way.
     onProcessError(error) {
       if (processErrorLogged) return;
@@ -171,7 +171,8 @@ export default async function plugin(bb: BbPluginApi) {
   // The server has no toast API, so it publishes the opening and every open
   // app window raises the toast itself (app.tsx, HotspotToaster).
   async function announce(episode: Episode): Promise<void> {
-    const top = episode.culprits[0] ?? null;
+    const [view] = await viewEpisodes([episode], 1);
+    const top = view.culprits[0] ?? null;
     bb.log.info(
       `episode ${episode.id} opened; top thread ${top === null ? "none" : top.threadId}`,
     );
@@ -189,14 +190,15 @@ export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(rpcContract, {
     async status() {
       const { cpuThreshold, sampleIntervalSeconds } = await settings.get();
+      const [open] = detector.open === null ? [null] : await viewEpisodes([detector.open], CULPRITS_SHOWN);
       return {
-        latest: store.latest(),
-        open: detector.open,
+        latest: await viewLatest(),
+        open,
         cpuThreshold,
         sampleIntervalSeconds,
       };
     },
-    timeline({ range }) {
+    async timeline({ range }) {
       const { spanMs, buckets } = RANGE_SPECS[range];
       const to = Date.now();
       const from = to - spanMs;
@@ -206,7 +208,7 @@ export default async function plugin(bb: BbPluginApi) {
         to,
         bucketMs,
         points,
-        episodes: store.episodes(from, to, TIMELINE_EPISODE_LIMIT),
+        episodes: await viewEpisodes(store.episodes(from, to, TIMELINE_EPISODE_LIMIT), CULPRITS_SHOWN),
       };
     },
   });
@@ -227,19 +229,21 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   /** Episodes overlapping [from, to] plus, optionally, what the window looked like. */
-  function historyText(options: {
+  async function historyText(options: {
     from: number;
     to: number;
     limit: number;
     culprits: number;
     summary: boolean;
-  }): string {
+  }): Promise<string> {
     const { from, to, limit, culprits, summary } = options;
     const lines = [`Hotspot history ${formatWhen(from)} → ${formatWhen(to)} (server-local time)`];
     if (summary) {
-      lines.push("", "Window:", ...describeWindow(summarizeWindow(store.samples(from, to), 5)));
+      const window = summarizeWindow(store.samples(from, to));
+      const known = await directory.resolve(idsToResolve(window.threads, 5));
+      lines.push("", "Window:", ...describeWindow(window, named(window.threads, known, 5)));
     }
-    const episodes = store.episodes(from, to, limit);
+    const episodes = await viewEpisodes(store.episodes(from, to, limit), culprits);
     lines.push("", episodes.length === 0 ? "No hot episodes in this window." : `Hot episodes, newest first (max ${limit}):`);
     for (const episode of episodes) lines.push(...describeEpisode(episode, culprits));
     return lines.join("\n");
@@ -277,7 +281,7 @@ export default async function plugin(bb: BbPluginApi) {
       if ("error" in window) {
         return { content: [{ type: "text", text: window.error ?? "" }], isError: true };
       }
-      const text = historyText({ ...window, limit, culprits: 5, summary: true });
+      const text = await historyText({ ...window, limit, culprits: 5, summary: true });
       return clampText(text, TOOL_MAX_CHARS);
     },
   });
@@ -291,13 +295,10 @@ export default async function plugin(bb: BbPluginApi) {
           summary: "Latest sample: thermal level, CPU, load, busiest threads and processes",
           options: { json: { type: "boolean", description: "Emit JSON" } },
           async run(input) {
-            const latest = store.latest();
-            const open = detector.open;
+            const latest = await viewLatest();
+            const [open] = detector.open === null ? [null] : await viewEpisodes([detector.open], 5);
             if (input.options.json) {
-              const trimmed =
-                open === null
-                  ? null
-                  : { ...open, culprits: open.culprits.slice(0, 5), others: open.others.slice(0, 5) };
+              const trimmed = open === null ? null : { ...open, others: open.others.slice(0, 5) };
               return { exitCode: 0, stdout: JSON.stringify({ latest, open: trimmed }) };
             }
             if (latest === null) {
@@ -332,14 +333,12 @@ export default async function plugin(bb: BbPluginApi) {
               });
             }
             if (json) {
-              const episodes = store.episodes(window.from, window.to, limit).map((episode) => ({
-                ...episode,
-                culprits: episode.culprits.slice(0, 5),
-                others: episode.others.slice(0, 5),
-              }));
+              const episodes = (await viewEpisodes(store.episodes(window.from, window.to, limit), 5)).map(
+                (episode) => ({ ...episode, others: episode.others.slice(0, 5) }),
+              );
               return { exitCode: 0, stdout: JSON.stringify({ ...window, episodes }) };
             }
-            const text = historyText({ ...window, limit, culprits: 3, summary: false });
+            const text = await historyText({ ...window, limit, culprits: 3, summary: false });
             return { exitCode: 0, stdout: clampText(text, CLI_MAX_CHARS) };
           },
         }),

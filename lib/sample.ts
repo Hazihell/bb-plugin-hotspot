@@ -19,6 +19,11 @@ import type { Sample } from "./schemas";
 import { readThermal } from "./thermal";
 
 export const TOP_THREADS = 5;
+/**
+ * Threads kept per sample. A few beyond the five shown, so an id that turns
+ * out to name no thread can be dropped when read without shortening the list.
+ */
+export const STORED_THREADS = TOP_THREADS + 3;
 export const TOP_PROCESSES = 5;
 
 interface CpuTicks {
@@ -52,13 +57,6 @@ const round = (value: number) => Math.round(value * 10) / 10;
 
 const loadPerCore = (cores: number) => Math.round((os.loadavg()[0] / cores) * 100) / 100;
 
-/**
- * Looks threads up in BB. The result holds every id BB knows, with its title
- * or null; an id missing from it does not exist (a `thr_…` string in some
- * process's argv that names no thread) and is dropped from the ranking.
- */
-export type ThreadResolver = (threadIds: string[]) => Promise<Map<string, string | null>>;
-
 export interface SamplerOptions {
   processes?: ProcessSource;
   thermal?: () => Promise<number | null>;
@@ -69,7 +67,7 @@ export interface SamplerOptions {
 /** Less than this much CPU time per core since the last reading is too noisy to trust. */
 const MIN_TICK_MS_PER_CORE = 1_000;
 
-export function createSampler(resolveThreads: ThreadResolver, options: SamplerOptions = {}) {
+export function createSampler(options: SamplerOptions = {}) {
   const source = options.processes ?? systemProcessSource;
   const thermalReader = options.thermal ?? readThermal;
   const cores = Math.max(1, os.cpus().length);
@@ -97,14 +95,9 @@ export function createSampler(resolveThreads: ThreadResolver, options: SamplerOp
     }
 
     const attribution = attributeThreads(rows);
-    // A few spare candidates so a dropped unknown id does not shorten the list.
-    const candidates = groupByThread(rows, attribution)
+    const threads = groupByThread(rows, attribution)
       .filter((entry) => entry.cpuPercent > 0)
-      .slice(0, TOP_THREADS + 3);
-    const known = await resolveThreads(candidates.map((entry) => entry.threadId)).catch(
-      () => new Map(candidates.map((entry) => [entry.threadId, null])),
-    );
-    const threads = candidates.filter((entry) => known.has(entry.threadId)).slice(0, TOP_THREADS);
+      .slice(0, STORED_THREADS);
     return {
       at: now,
       thermal,
@@ -112,7 +105,6 @@ export function createSampler(resolveThreads: ThreadResolver, options: SamplerOp
       load: loadPerCore(cores),
       threads: threads.map((entry) => ({
         threadId: entry.threadId,
-        title: known.get(entry.threadId) ?? null,
         cpu: round(entry.cpuPercent / cores),
         processes: entry.processCount,
       })),

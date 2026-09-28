@@ -12,7 +12,7 @@ function sample(minute, { cpu = 10, thermal = 0, threads = [], procs = [] } = {}
 }
 const hot = (minute, threads = []) => sample(minute, { cpu: 90, threads });
 const cool = (minute) => sample(minute);
-const thread = (threadId, cpu, title = null) => ({ threadId, title, cpu, processes: 1 });
+const thread = (threadId, cpu) => ({ threadId, cpu, processes: 1 });
 
 /** Feed samples through the detector and collect what it announced. */
 function run(samples, state = initialState()) {
@@ -68,7 +68,7 @@ test("a hot sample inside the cool-down keeps the episode open", () => {
 test("culprits are ranked by CPU summed over the hot samples", () => {
   const { state } = run([
     hot(0, [thread("thr_spikyyyyyy", 70), thread("thr_steadyyyyy", 30)]),
-    hot(1, [thread("thr_steadyyyyy", 30, "Steady build")]),
+    hot(1, [thread("thr_steadyyyyy", 30)]),
     hot(2, [thread("thr_steadyyyyy", 30)]),
     cool(3),
   ]);
@@ -80,7 +80,7 @@ test("culprits are ranked by CPU summed over the hot samples", () => {
       ["thr_steadyyyyy", 90, 3],
     ].sort((a, b) => b[1] - a[1]),
   );
-  assert.equal(culprits[0].title, "Steady build");
+  assert.equal("title" in culprits[0], false);
   assert.equal(culprits[0].peakCpu, 30);
 });
 

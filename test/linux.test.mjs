@@ -59,7 +59,7 @@ test("when ps fails, a sample is still stored with kernel CPU and no threads", a
       throw new Error("ps: command not found");
     },
   });
-  const takeSample = createSampler(async () => new Map(), {
+  const takeSample = createSampler({
     processes: source,
     thermal: async () => null,
     onProcessError: (error) => errors.push(error.message),
@@ -75,10 +75,7 @@ test("when ps fails, a sample is still stored with kernel CPU and no threads", a
 
 test("a Linux sample ranks threads found through /proc", async () => {
   const { source } = linuxSource();
-  const takeSample = createSampler(
-    async (ids) => new Map(ids.map((id) => [id, null])),
-    { processes: source, thermal: async () => null },
-  );
+  const takeSample = createSampler({ processes: source, thermal: async () => null });
   const sample = await takeSample(1);
   assert.deepEqual(sample.threads.map((entry) => entry.threadId), ["thr_aaaaaaaaaa", "thr_bbbbbbbbbb"]);
   assert.deepEqual(sample.procs.map((entry) => entry.pid), [500]);

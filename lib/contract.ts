@@ -6,7 +6,7 @@
  */
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { episodeSchema, sampleSchema, timelinePointSchema } from "./schemas";
+import { episodeViewSchema, sampleViewSchema, timelinePointSchema } from "./schemas";
 
 export const RANGES = ["24h", "7d"] as const;
 export type Range = (typeof RANGES)[number];
@@ -15,8 +15,8 @@ export const rpcContract = defineRpcContract({
   status: {
     input: z.null(),
     output: z.object({
-      latest: sampleSchema.nullable(),
-      open: episodeSchema.nullable(),
+      latest: sampleViewSchema.nullable(),
+      open: episodeViewSchema.nullable(),
       cpuThreshold: z.number(),
       sampleIntervalSeconds: z.number(),
     }),
@@ -28,11 +28,11 @@ export const rpcContract = defineRpcContract({
       to: z.number(),
       bucketMs: z.number(),
       points: z.array(timelinePointSchema),
-      episodes: z.array(episodeSchema),
+      episodes: z.array(episodeViewSchema),
     }),
   },
 });
 
-export type { Episode, Sample, TimelinePoint } from "./schemas";
+export type { EpisodeView as Episode, SampleView as Sample, TimelinePoint } from "./schemas";
 export type Status = z.infer<(typeof rpcContract)["status"]["output"]>;
 export type Timeline = z.infer<(typeof rpcContract)["timeline"]["output"]>;

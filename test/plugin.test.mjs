@@ -6,9 +6,19 @@ import { MIGRATIONS, createStore } from "../lib/store.ts";
 
 const MINUTE = 60_000;
 
+const THREADS = {
+  // An untitled thread: BB names it by its fallback title.
+  thr_hotthread1: { title: null, titleFallback: "Run the e2e suite" },
+};
+
 /** Load the plugin in the SDK's fake host with one stored episode. */
 async function loadWithEpisode() {
   const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
+  harness.sdk.stub("threads.get", async ({ threadId }) => {
+    const thread = THREADS[threadId];
+    if (thread === undefined) throw Object.assign(new Error("HTTP 404: Thread not found"), { status: 404 });
+    return { id: threadId, ...thread };
+  });
   await plugin(bb);
   const store = createStore(bb.storage.database());
   const start = Date.now() - 30 * MINUTE;
@@ -20,8 +30,11 @@ async function loadWithEpisode() {
     peakThermal: 2,
     peakCpu: 94,
     samples: 20,
+    // Written the way an older build stored it: a frozen null title, and a
+    // culprit id that names no thread. Both must read correctly.
     culprits: [
-      { threadId: "thr_hotthread1", title: "Run the e2e suite", cpuSum: 900, samples: 20, peakCpu: 70 },
+      { threadId: "thr_aaaaaaaaaa", title: "Stale", cpuSum: 1200, samples: 20, peakCpu: 90 },
+      { threadId: "thr_hotthread1", title: null, cpuSum: 900, samples: 20, peakCpu: 70 },
     ],
     others: [{ name: "WindowServer", cpuSum: 40, samples: 20 }],
   });
@@ -30,7 +43,10 @@ async function loadWithEpisode() {
     thermal: 2,
     cpu: 94,
     load: 1.4,
-    threads: [{ threadId: "thr_hotthread1", title: "Run the e2e suite", cpu: 70, processes: 6 }],
+    threads: [
+      { threadId: "thr_aaaaaaaaaa", cpu: 90, processes: 1 },
+      { threadId: "thr_hotthread1", cpu: 70, processes: 6 },
+    ],
     procs: [],
   });
   return { bb, harness };
@@ -55,6 +71,8 @@ test("hotspot_history names the culprit thread for a window", async () => {
   assert.match(text, /peak thermal heavy, peak CPU 94%/);
   assert.match(text, /1\. Run the e2e suite \(thr_hotthread1\)\s+avg 45%/);
   assert.match(text, /Window:\n1 samples: CPU avg 94%/);
+  assert.match(text, /  1\. Run the e2e suite \(thr_hotthread1\)  avg 70%/);
+  assert.doesNotMatch(text, /thr_aaaaaaaaaa|Stale/);
   assert.ok(text.length <= 8_000);
 });
 
@@ -76,6 +94,8 @@ test("bb hotspot episodes and status print bounded text", async () => {
 
   const status = await harness.runCli(["status"]);
   assert.match(status.stdout, /thermal heavy, CPU 94%/);
+  assert.match(status.stdout, /thread  70%  Run the e2e suite/);
+  assert.doesNotMatch(status.stdout + episodes.stdout + json.stdout, /thr_aaaaaaaaaa/);
 
   const bad = await harness.runCli(["episodes", "--limit", "500"]);
   assert.notEqual(bad.exitCode, 0);

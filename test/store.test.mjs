@@ -15,7 +15,7 @@ function sample(at, extra = {}) {
 
 test("samples round-trip with their thread lists", () => {
   const store = openStore();
-  const threads = [{ threadId: "thr_aaaaaaaaaa", title: "Build", cpu: 90, processes: 3 }];
+  const threads = [{ threadId: "thr_aaaaaaaaaa", cpu: 90, processes: 3 }];
   store.addSample(sample(1_000, { threads, thermal: null }));
   store.addSample(sample(2_000));
   assert.deepEqual(store.samples(0, 1_500), [sample(1_000, { threads, thermal: null })]);
@@ -54,4 +54,12 @@ test("rows that do not parse are skipped, not cast", () => {
   assert.deepEqual(store.samples(0, 10_000).map((row) => row.at), [1_000]);
   assert.equal(store.latest()?.at, 1_000);
   assert.deepEqual(store.episodes(0, 10, 10), []);
+});
+
+test("a title stored by an older build is stripped when the row is read", () => {
+  const store = openStore();
+  store.addSample(
+    sample(1_000, { threads: [{ threadId: "thr_aaaaaaaaaa", title: "Old title", cpu: 9, processes: 1 }] }),
+  );
+  assert.deepEqual(store.latest().threads, [{ threadId: "thr_aaaaaaaaaa", cpu: 9, processes: 1 }]);
 });

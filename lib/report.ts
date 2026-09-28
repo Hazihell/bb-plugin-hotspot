@@ -2,7 +2,7 @@
  * Read-side shaping shared by the page, the CLI and the agent tool.
  */
 import { thermalLabel } from "./labels";
-import type { Episode, Sample, TimelinePoint } from "./schemas";
+import type { EpisodeView, Sample, SampleView, TimelinePoint } from "./schemas";
 
 /**
  * Fold samples into `count` equal buckets over [from, to).
@@ -86,7 +86,7 @@ const pct = (value: number) => `${Math.round(value)}%`;
 const threadName = (entry: { threadId: string; title: string | null }) =>
   entry.title === null ? entry.threadId : `${entry.title} (${entry.threadId})`;
 
-export function describeSample(sample: Sample): string[] {
+export function describeSample(sample: SampleView): string[] {
   const lines = [
     `${formatWhen(sample.at)}  thermal ${thermalLabel(sample.thermal)}, CPU ${pct(sample.cpu)}, load/core ${sample.load.toFixed(2)}`,
   ];
@@ -100,7 +100,7 @@ export function describeSample(sample: Sample): string[] {
   return lines;
 }
 
-export function describeEpisode(episode: Episode, culpritLimit: number): string[] {
+export function describeEpisode(episode: EpisodeView, culpritLimit: number): string[] {
   const end = episode.endAt ?? episode.lastHotAt;
   const lines = [
     `#${episode.id ?? "?"}  ${formatWhen(episode.startAt)} → ${episode.endAt === null ? "ongoing" : formatWhen(end)}` +
@@ -123,17 +123,23 @@ export function describeEpisode(episode: Episode, culpritLimit: number): string[
   return lines;
 }
 
+export interface WindowThread {
+  threadId: string;
+  avgCpu: number;
+  peakCpu: number;
+}
+
 export interface WindowSummary {
   samples: number;
   peakCpu: number;
   avgCpu: number;
   peakThermal: number | null;
-  /** Threads by CPU summed over every sample in the window. */
-  threads: Array<{ threadId: string; title: string | null; avgCpu: number; peakCpu: number }>;
+  /** Every thread seen, by CPU summed over all samples in the window. */
+  threads: WindowThread[];
 }
 
-export function summarizeWindow(samples: Sample[], threadLimit: number): WindowSummary {
-  const threads = new Map<string, { threadId: string; title: string | null; sum: number; peak: number }>();
+export function summarizeWindow(samples: Sample[]): WindowSummary {
+  const threads = new Map<string, { threadId: string; sum: number; peak: number }>();
   let peakCpu = 0;
   let cpuSum = 0;
   let peakThermal: number | null = null;
@@ -142,10 +148,9 @@ export function summarizeWindow(samples: Sample[], threadLimit: number): WindowS
     cpuSum += sample.cpu;
     if (sample.thermal !== null) peakThermal = Math.max(peakThermal ?? 0, sample.thermal);
     for (const thread of sample.threads) {
-      const entry = threads.get(thread.threadId) ?? { threadId: thread.threadId, title: null, sum: 0, peak: 0 };
+      const entry = threads.get(thread.threadId) ?? { threadId: thread.threadId, sum: 0, peak: 0 };
       entry.sum += thread.cpu;
       entry.peak = Math.max(entry.peak, thread.cpu);
-      entry.title = thread.title ?? entry.title;
       threads.set(thread.threadId, entry);
     }
   }
@@ -157,22 +162,20 @@ export function summarizeWindow(samples: Sample[], threadLimit: number): WindowS
     peakThermal,
     threads: [...threads.values()]
       .sort((a, b) => b.sum - a.sum)
-      .slice(0, threadLimit)
-      .map((entry) => ({
-        threadId: entry.threadId,
-        title: entry.title,
-        avgCpu: entry.sum / count,
-        peakCpu: entry.peak,
-      })),
+      .map((entry) => ({ threadId: entry.threadId, avgCpu: entry.sum / count, peakCpu: entry.peak })),
   };
 }
 
-export function describeWindow(summary: WindowSummary): string[] {
+/** `threads` is the summary's list after naming (see lib/threads.ts `named`). */
+export function describeWindow(
+  summary: WindowSummary,
+  threads: Array<WindowThread & { title: string | null }>,
+): string[] {
   if (summary.samples === 0) return ["No samples in this window (the Mac was asleep or Hotspot was off)."];
   const lines = [
     `${summary.samples} samples: CPU avg ${pct(summary.avgCpu)}, peak ${pct(summary.peakCpu)}; peak thermal ${thermalLabel(summary.peakThermal)}`,
   ];
-  for (const [index, thread] of summary.threads.entries()) {
+  for (const [index, thread] of threads.entries()) {
     lines.push(`  ${index + 1}. ${threadName(thread)}  avg ${pct(thread.avgCpu)}, peak ${pct(thread.peakCpu)}`);
   }
   return lines;

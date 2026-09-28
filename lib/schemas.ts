@@ -5,9 +5,12 @@
  */
 import { z } from "zod";
 
+/**
+ * Stored rows hold thread ids only; titles are looked up when shown
+ * (lib/threads.ts). A `title` in a row from an older build is stripped.
+ */
 export const threadEntrySchema = z.object({
   threadId: z.string(),
-  title: z.string().nullable(),
   /** Share of the whole machine, 0–100 (not per-core `ps` percent). */
   cpu: z.number(),
   processes: z.number(),
@@ -34,7 +37,6 @@ export const sampleSchema = z.object({
 
 export const culpritSchema = z.object({
   threadId: z.string(),
-  title: z.string().nullable(),
   /** Sum of the thread's CPU % over the hot samples it appeared in. */
   cpuSum: z.number(),
   /** Hot samples in which the thread was in the top five. */
@@ -72,6 +74,13 @@ export const detectorStateSchema = z.object({
   lastAt: z.number().nullable(),
 });
 
+/* What the page, CLI and tool show: stored shapes with titles attached. */
+const titled = { title: z.string().nullable() };
+export const threadViewSchema = threadEntrySchema.extend(titled);
+export const culpritViewSchema = culpritSchema.extend(titled);
+export const sampleViewSchema = sampleSchema.extend({ threads: z.array(threadViewSchema) });
+export const episodeViewSchema = episodeSchema.extend({ culprits: z.array(culpritViewSchema) });
+
 export const timelinePointSchema = z.object({
   at: z.number(),
   /** Highest machine CPU in the bucket, or null when nothing was sampled. */
@@ -86,5 +95,7 @@ export type Sample = z.infer<typeof sampleSchema>;
 export type Culprit = z.infer<typeof culpritSchema>;
 export type OtherCulprit = z.infer<typeof otherCulpritSchema>;
 export type Episode = z.infer<typeof episodeSchema>;
+export type SampleView = z.infer<typeof sampleViewSchema>;
+export type EpisodeView = z.infer<typeof episodeViewSchema>;
 export type DetectorState = z.infer<typeof detectorStateSchema>;
 export type TimelinePoint = z.infer<typeof timelinePointSchema>;
