@@ -102,7 +102,11 @@ function Metric({
   value: string;
   alert: Alert;
   caption: string;
-  /** A second caption line in the alert colour, for a state the colour alone must not carry. */
+  /**
+   * A state the colour alone must not carry, in the alert colour: a second
+   * caption line on the page, the caption itself on the popover (the
+   * caption stays in `description`).
+   */
   note?: string | null;
   /** The whole cell in words, for screen readers and the hover title. */
   description: string;
@@ -121,13 +125,20 @@ function Metric({
       >
         {value}
       </div>
-      <div className="mt-1">{children}</div>
-      <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{caption}</div>
-      {note === null ? null : (
+      <div className={size === "page" ? "mt-1" : "mt-0.5"}>{children}</div>
+      {/* The popover has room for one caption: a note, when there is one, takes its place. */}
+      {size === "sheet" && note !== null ? (
+        <div className={cn("mt-0.5 truncate text-[11px] font-medium", alert === null ? "text-muted-foreground" : VALUE_ALERT[alert])}>
+          {note}
+        </div>
+      ) : (
+        <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{caption}</div>
+      )}
+      {size === "page" && note !== null ? (
         <div className={cn("truncate text-[11px] font-medium", alert === null ? "text-muted-foreground" : VALUE_ALERT[alert])}>
           {note}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -158,7 +169,7 @@ export function MetricsRow({ status, size }: { status: Status | null; size: "she
   const memValues = recent.map((point) => point.mem);
   const memAlert: Alert = memory?.pressure === "critical" ? "hot" : memory?.pressure === "warn" ? "warn" : null;
   const pressureNote =
-    memory?.pressure === "critical" ? "critical" : memory?.pressure === "warn" ? "high pressure" : null;
+    memory?.pressure === "critical" ? "critical pressure" : memory?.pressure === "warn" ? "high pressure" : null;
   const memCaption = memory === null ? "not read yet" : `swap ${bytesText(memory.swapUsedBytes)}`;
 
   const loadValues = recent.map((point) => point.load);
