@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { STACK_GAP, fitFooter, footerLines, footerView, footerWidth, shortTitle } from "../lib/footer.ts";
+import { fitFooter, footerLines, footerView, footerWidth, shortTitle } from "../lib/footer.ts";
 
 const GB = 1024 ** 3;
 const threads = [
@@ -28,39 +28,38 @@ test("calm: labelled CPU and memory, no heat word, no title", () => {
   );
 });
 
-test("hot: the heat word, both metrics and the top thread's short title", () => {
+test("hot: both metrics and the top thread's short title; the heat word only in the tooltip", () => {
   const view = footerView({ latest: latest({ thermal: 2, cpu: 83.2, load: 1.2 }), hot: true, cpuThreshold: 80 });
   assert.equal(view.tone, "hot");
   assert.equal(view.heat, "Hot");
   assert.equal(view.cpu.alert, "hot");
-  assert.equal(footerLines(view)[0].text, "Hot · CPU 83% · MEM 62% · Home page Craft red…");
-  assert.match(view.tooltip, /^Hotspot \(hot episode\): Thermal heavy · CPU 83% · Memory 62%/);
+  assert.equal(footerLines(view)[0].text, "CPU 83% · MEM 62% · Home page Craft red…");
+  assert.match(view.tooltip, /^Hotspot: Hot \(hot episode\) · Thermal heavy · CPU 83% · Memory 62%/);
 });
 
-test("the footer sheds the title, stacks the metrics, then sheds the heat word, then a metric, never a label", () => {
+test("the footer sheds the title, stacks the metrics, then sheds a metric, never a label, and never shows the heat word", () => {
   const view = footerView({ latest: latest({ thermal: 2, cpu: 83.2 }), hot: true, cpuThreshold: 80 });
   const lines = footerLines(view);
   assert.deepEqual(lines.map(shape), [
-    "row: Hot · CPU 83% · MEM 62% · Home page Craft red…",
-    "row: Hot · CPU 83% · MEM 62%",
-    "stack: Hot · CPU 83% · MEM 62%",
+    "row: CPU 83% · MEM 62% · Home page Craft red…",
+    "row: CPU 83% · MEM 62%",
     "stack: CPU 83% · MEM 62%",
     "stack: CPU 83%",
   ]);
+  for (const { text } of lines) assert.doesNotMatch(text, /Hot|Warm|Busy/);
   // Every number on every line has its label right before it.
   for (const { text } of lines) assert.doesNotMatch(text.replace(/(CPU|MEM) \d+%/g, ""), /\d+%/);
 
-  // A stack is as wide as its widest metric line, plus the heat word beside it.
-  assert.equal(footerWidth(lines[2], measure), 7 * 6 + STACK_GAP + 3 * 7);
-  assert.equal(footerWidth(lines[3], measure), 7 * 6);
+  // A stack is as wide as its widest metric line.
+  assert.equal(footerWidth(lines[2], measure), 7 * 6);
 
   const at = (width) => shape(fitFooter(view, width, measure));
   assert.equal(at(400), shape(lines[0]));
   for (let index = 1; index < lines.length; index += 1) {
     assert.equal(at(footerWidth(lines[index - 1], measure) - 1), shape(lines[index]));
   }
-  // The desktop sidebar leaves about 80px of text: both numbers and "Hot" still fit.
-  assert.equal(at(80), "stack: Hot · CPU 83% · MEM 62%");
+  // The desktop sidebar leaves about 80px of text: both numbers still fit.
+  assert.equal(at(80), "stack: CPU 83% · MEM 62%");
   // Narrower than anything: the last line, still labelled.
   assert.equal(at(10), "stack: CPU 83%");
 });
@@ -77,11 +76,13 @@ test("the one-metric line keeps memory when memory is the problem", () => {
 test("moderate thermal says Warm; CPU over the threshold alone says Busy", () => {
   const warm = footerView({ latest: latest({ thermal: 1, cpu: 30 }), hot: false, cpuThreshold: 80 });
   assert.equal(warm.tone, "warm");
-  assert.equal(footerLines(warm)[0].text, "Warm · CPU 30% · MEM 62% · Home page Craft red…");
+  assert.equal(footerLines(warm)[0].text, "CPU 30% · MEM 62% · Home page Craft red…");
+  assert.match(warm.tooltip, /^Hotspot: Warm · Thermal moderate/);
   const busy = footerView({ latest: latest({ cpu: 91 }), hot: false, cpuThreshold: 80 });
   assert.equal(busy.tone, "calm");
   assert.equal(busy.heat, "Busy");
-  assert.equal(footerLines(busy)[1].text, "Busy · CPU 91% · MEM 62%");
+  assert.equal(footerLines(busy)[1].text, "CPU 91% · MEM 62%");
+  assert.match(busy.tooltip, /^Hotspot: Busy · Thermal nominal/);
 });
 
 test("unknown thermal colours by the CPU rule; unread memory leaves MEM out", () => {
@@ -92,7 +93,7 @@ test("unknown thermal colours by the CPU rule; unread memory leaves MEM out", ()
   });
   assert.equal(over.tone, "hot");
   assert.equal(over.heat, "Hot");
-  assert.deepEqual(footerLines(over).map(shape), ["row: Hot · CPU 90%", "row: CPU 90%"]);
+  assert.deepEqual(footerLines(over).map(shape), ["row: CPU 90%"]);
   assert.match(over.tooltip, /Thermal unknown · CPU 90% · Memory not read/);
   assert.match(over.tooltip, /No BB thread is using CPU/);
   const under = footerView({ latest: { thermal: null, cpu: 20, load: 1, threads: [] }, hot: false, cpuThreshold: 80 });

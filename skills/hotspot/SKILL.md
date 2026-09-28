@@ -109,10 +109,10 @@ counts (`bb plugin logs hotspot`).
 
 The sidebar footer shows Hotspot's flame and labelled figures, `CPU 16%`
 and `MEM 62%`. The flame is grey while calm, amber when warm or busy, red
-when hot; a word (`Hot`, `Warm`, `Busy`) and the top thread's title join
-the figures when they fit. In the usual 320px sidebar the two figures stack
-on two lines with `Hot` beside them; narrower, the word goes, then MEM (or
-CPU, when only memory is flagged). A figure never shows without its label.
+when hot, and no word repeats it (the tooltip starts with `Hot`, `Warm`
+or `Busy`); the top thread's title joins the figures when they fit. In the
+usual 320px sidebar the two figures stack on two lines; narrower, MEM goes
+(or CPU, when only memory is flagged). A figure never shows without its label.
 A figure turns red at the CPU threshold, and MEM turns amber or red under
 kernel memory pressure. Hovering shows the full line; clicking opens a
 popover that leads with a verdict (running cool, warming up, working hard

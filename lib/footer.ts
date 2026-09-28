@@ -4,11 +4,11 @@
  *
  * The footer row is shared with other plugins' readouts, so every number
  * carries its label ("CPU 16%", "MEM 62%") and the flame icon names the
- * plugin. When the row is narrow the readout sheds words before numbers:
- * the thread title first, then it stacks the two metrics on two short lines
- * with the heat word beside them, then drops the heat word (the icon's
- * colour still says it), then the second metric. It never drops a label to
- * keep a number.
+ * plugin. The flame's colour says the heat, so the readout never spells it
+ * out; the tooltip, which is also the button's accessible name, does. When
+ * the row is narrow the readout sheds words before numbers: the thread
+ * title first, then it stacks the two metrics on two short lines, then
+ * drops the second metric. It never drops a label to keep a number.
  */
 import { bytesText, thermalLabel } from "./labels";
 
@@ -32,7 +32,7 @@ export interface FooterInput {
 /** Dot colour: nominal, moderate, heavy or worse; unknown thermal falls back to the CPU rule. */
 export type FooterTone = "calm" | "warm" | "hot" | "idle";
 
-/** The word shown beside the icon when the Mac is not calm. */
+/** How the Mac is doing when not calm: the flame's colour, and the tooltip's first word. */
 export type FooterHeat = "Hot" | "Warm" | "Busy";
 
 /** Whether a number deserves a colour: amber for `warn`, red for `hot`. */
@@ -61,11 +61,10 @@ export interface FooterView {
 /**
  * One way to fill the footer, from the full line down to a single labelled
  * number. A `row` is one line of parts joined with ` · `; a `stack` puts
- * the metrics on two lines in a smaller size, with the heat word beside them.
+ * the metrics on two lines in a smaller size.
  */
 export interface FooterLine {
   layout: "row" | "stack";
-  heat: FooterHeat | null;
   metrics: FooterMetric[];
   title: string | null;
   /** The whole readout as one string: the tooltip-free summary, and the row as drawn. */
@@ -74,9 +73,6 @@ export interface FooterLine {
 
 /** How wide `text` draws: `line` in the footer's text size, `stack` in the stacked metrics' smaller size. */
 export type FooterMeasure = (text: string, size: "line" | "stack") => number;
-
-/** Pixels between the stacked metrics and the heat word. */
-export const STACK_GAP = 4;
 
 export const TITLE_CHARS = 20;
 
@@ -133,6 +129,7 @@ export function footerView(input: FooterInput): FooterView {
       ? "Memory not read"
       : `Memory ${pct(memory.percent)} (swap ${bytesText(memory.swapUsedBytes)}, pressure ${memory.pressure ?? "unknown"})`;
   const summary = [
+    ...(heat === null ? [] : [input.hot ? `${heat} (hot episode)` : heat]),
     `Thermal ${thermalLabel(thermal)}`,
     `CPU ${pct(latest.cpu)}`,
     memoryText,
@@ -143,39 +140,32 @@ export function footerView(input: FooterInput): FooterView {
     return `${threadName(thread)} ${pct(thread.cpu)} CPU${memBytes === null ? "" : ` · ${bytesText(memBytes)}`}`;
   });
   const tooltip = [
-    `Hotspot${input.hot ? " (hot episode)" : ""}: ${summary}`,
+    `Hotspot: ${summary}`,
     threads.length === 0 ? "No BB thread is using CPU" : `Top threads: ${threads.join(", ")}`,
   ].join("\n");
 
   return { tone, heat, cpu, mem, title, tooltip };
 }
 
-function line(
-  layout: FooterLine["layout"],
-  heat: FooterHeat | null,
-  metrics: FooterMetric[],
-  title: string | null,
-): FooterLine {
-  const text = [heat, ...metrics.map(metricText), title].filter((part) => part !== null).join(" · ");
-  return { layout, heat, metrics, title, text };
+function line(layout: FooterLine["layout"], metrics: FooterMetric[], title: string | null): FooterLine {
+  const text = [...metrics.map(metricText), title].filter((part) => part !== null).join(" · ");
+  return { layout, metrics, title, text };
 }
 
 /**
  * Every readout the footer may show, most complete first: the full row;
- * the row without the title; the metrics stacked with the heat word; the
- * stack alone; one metric in the stack's smaller size. Without memory the
- * ladder has no stacks and ends at the CPU row. The one metric is memory
- * only when memory is flagged and CPU is not.
+ * the row without the title; the metrics stacked; one metric in the
+ * stack's smaller size. Without memory the ladder has no stacks and ends at
+ * the CPU row. The one metric is memory only when memory is flagged and CPU
+ * is not.
  */
 export function footerLines(view: FooterView): FooterLine[] {
   const both = view.mem === null ? [view.cpu] : [view.cpu, view.mem];
   const primary = view.mem !== null && view.mem.alert !== null && view.cpu.alert === null ? view.mem : view.cpu;
   const lines = [
-    line("row", view.heat, both, view.title),
-    line("row", view.heat, both, null),
-    ...(both.length > 1
-      ? [line("stack", view.heat, both, null), line("stack", null, both, null), line("stack", null, [primary], null)]
-      : [line("row", null, [primary], null)]),
+    line("row", both, view.title),
+    line("row", both, null),
+    ...(both.length > 1 ? [line("stack", both, null), line("stack", [primary], null)] : [line("row", [primary], null)]),
   ];
   const key = (candidate: FooterLine) => `${candidate.layout}:${candidate.text}`;
   return lines.filter((candidate, index) => lines.findIndex((other) => key(other) === key(candidate)) === index);
@@ -184,8 +174,7 @@ export function footerLines(view: FooterView): FooterLine[] {
 /** How wide a readout draws. */
 export function footerWidth(candidate: FooterLine, measure: FooterMeasure): number {
   if (candidate.layout === "row") return measure(candidate.text, "line");
-  const stack = Math.max(...candidate.metrics.map((metric) => measure(stackText(metric), "stack")));
-  return candidate.heat === null ? stack : stack + STACK_GAP + measure(candidate.heat, "line");
+  return Math.max(...candidate.metrics.map((metric) => measure(stackText(metric), "stack")));
 }
 
 /**

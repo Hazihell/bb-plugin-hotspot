@@ -27,11 +27,12 @@ its whole minute and a live one its last 2 seconds. One reading costs about
 30 ms and one `ps`.
 
 The sidebar footer always shows Hotspot's flame and labelled figures, `CPU
-16%` and `MEM 62%`. The flame turns amber or red with the heat, and a word
-(`Hot`, `Warm`, `Busy`) and the top thread join the figures when there is
-room. In the 320px sidebar beside other readouts the two figures stack on
-two short lines; narrower still, the word goes first, then one figure, but
-a figure never appears without its label. Hover for the full line. Clicking
+16%` and `MEM 62%`. The flame turns amber or red with the heat, so no word
+spells it out there; the tooltip and the button's accessible name start
+with it (`Hot`, `Warm`, `Busy`). The top thread's title joins the figures
+when there is room. In the 320px sidebar beside other readouts the two
+figures stack on two short lines; narrower still, one figure goes, but a
+figure never appears without its label. Hover for the full line. Clicking
 it opens a popover that leads with the verdict ("Running hot since 2:13 PM,
 mostly <thread>"), then a numbers row (heat, CPU, memory with swap, load per
 core, each with a line for the last hour and colour only when it crosses a

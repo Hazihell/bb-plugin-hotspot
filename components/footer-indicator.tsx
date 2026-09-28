@@ -17,7 +17,6 @@ import {
   type FooterLine,
   type FooterMetric,
   type MetricAlert,
-  STACK_GAP,
   STACK_SPACE,
   fitFooter,
   footerView,
@@ -119,11 +118,6 @@ function closeSidebarDrawer(from: Element) {
   toggle?.click();
 }
 
-const HEAT_WORD: Record<FooterHeat, string> = {
-  Busy: "text-[var(--warning-text)]",
-  Warm: "text-[var(--warning-text)]",
-  Hot: "text-destructive",
-};
 export const ALERT_TEXT: Record<Exclude<MetricAlert, null>, string> = {
   warn: "text-[var(--warning-text)]",
   hot: "text-destructive",
@@ -159,7 +153,7 @@ function useTextBox(element: HTMLElement | null): TextBox | null {
       const style = getComputedStyle(element);
       const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
       const width = element.clientWidth - padding - ICON_AND_GAP;
-      // Measured at medium weight: the heat word and a flagged number are drawn that way.
+      // Measured at medium weight, the way a flagged number is drawn.
       const line = `500 ${style.fontSize} ${style.fontFamily}`;
       const stack = `500 ${STACK_PX}px ${style.fontFamily}`;
       setBox((previous) =>
@@ -186,30 +180,22 @@ function MetricText({ metric, stacked }: { metric: FooterMetric; stacked?: boole
   );
 }
 
-function HeatWord({ heat }: { heat: FooterHeat }) {
-  return <span className={cn("font-medium", HEAT_WORD[heat])}>{heat}</span>;
-}
-
 /**
- * `Hot · CPU 83% · MEM 62% · Home page…` on one line, or CPU over MEM on two
- * short lines with the heat word beside them. Labels quiet, numbers clear,
- * colour only on a flagged number.
+ * `CPU 83% · MEM 62% · Home page…` on one line, or CPU over MEM on two short
+ * lines. Labels quiet, numbers clear, colour only on a flagged number; the
+ * flame beside it says the heat.
  */
 function FooterText({ line }: { line: FooterLine }) {
   if (line.layout === "stack") {
     return (
-      <span className="flex min-w-0 items-center" style={{ gap: STACK_GAP }}>
-        <span className="flex flex-col leading-3" style={{ fontSize: STACK_PX }}>
-          {line.metrics.map((metric) => (
-            <MetricText key={metric.label} metric={metric} stacked />
-          ))}
-        </span>
-        {line.heat === null ? null : <HeatWord heat={line.heat} />}
+      <span className="flex min-w-0 flex-col leading-3" style={{ fontSize: STACK_PX }}>
+        {line.metrics.map((metric) => (
+          <MetricText key={metric.label} metric={metric} stacked />
+        ))}
       </span>
     );
   }
   const parts: ReactNode[] = [];
-  if (line.heat !== null) parts.push(<HeatWord key="heat" heat={line.heat} />);
   for (const metric of line.metrics) parts.push(<MetricText key={metric.label} metric={metric} />);
   if (line.title !== null) parts.push(<span key="title">{line.title}</span>);
   return (
