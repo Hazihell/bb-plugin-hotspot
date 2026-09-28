@@ -116,3 +116,12 @@ test("episodes round-trip through the store and prune by end time", () => {
   store.saveEpisode({ ...open, endAt: now - 9 * DAY_MS });
   assert.deepEqual(store.prune(now, 7).episodes, 1);
 });
+
+test("restoreState keeps a valid stored state and resets anything else", async () => {
+  const { restoreState } = await import("../lib/episodes.ts");
+  const { state } = run([hot(0), hot(1), hot(2)]);
+  assert.deepEqual(restoreState(JSON.parse(JSON.stringify(state))), state);
+  assert.deepEqual(restoreState(null), initialState());
+  assert.deepEqual(restoreState({ streak: "x", open: null, normalStreak: 0, lastAt: null }), initialState());
+  assert.deepEqual(restoreState({ ...state, normalStreak: -1 }), initialState());
+});

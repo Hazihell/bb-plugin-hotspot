@@ -10,7 +10,7 @@
 import { PluginCliError, cliCommand, defineCli, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { type Range, rpcContract } from "./lib/contract";
-import { type DetectorState, type Episode, initialState, step } from "./lib/episodes";
+import { type DetectorState, type Episode, restoreState, step } from "./lib/episodes";
 import {
   bucketSamples,
   clampText,
@@ -120,8 +120,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   // The detector's streak survives reloads in KV; the episodes themselves
   // live in SQLite, and the open one is rewritten there after every sample.
-  let detector: DetectorState =
-    (await bb.storage.kv.get<DetectorState>(DETECTOR_KEY)) ?? initialState();
+  let detector: DetectorState = restoreState(await bb.storage.kv.get<unknown>(DETECTOR_KEY));
 
   async function record(at: number): Promise<void> {
     const { sampleIntervalSeconds, cpuThreshold } = await settings.get();

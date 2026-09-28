@@ -63,6 +63,15 @@ export const episodeSchema = z.object({
   others: z.array(otherCulpritSchema),
 });
 
+/** The detector's memory between samples (see lib/episodes.ts). */
+export const detectorStateSchema = z.object({
+  /** Hot samples seen so far that have not yet opened an episode. */
+  streak: episodeSchema.nullable(),
+  open: episodeSchema.nullable(),
+  normalStreak: z.number().int().min(0),
+  lastAt: z.number().nullable(),
+});
+
 export const timelinePointSchema = z.object({
   at: z.number(),
   /** Highest machine CPU in the bucket, or null when nothing was sampled. */
@@ -77,4 +86,5 @@ export type Sample = z.infer<typeof sampleSchema>;
 export type Culprit = z.infer<typeof culpritSchema>;
 export type OtherCulprit = z.infer<typeof otherCulpritSchema>;
 export type Episode = z.infer<typeof episodeSchema>;
+export type DetectorState = z.infer<typeof detectorStateSchema>;
 export type TimelinePoint = z.infer<typeof timelinePointSchema>;

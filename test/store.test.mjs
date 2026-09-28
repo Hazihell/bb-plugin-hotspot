@@ -35,3 +35,23 @@ test("prune drops samples older than the retention window only", () => {
     [now - 7 * DAY_MS, now - 60_000],
   );
 });
+
+test("rows that do not parse are skipped, not cast", () => {
+  const db = new Database(":memory:");
+  for (const statement of MIGRATIONS) db.exec(statement);
+  const store = createStore(db);
+  store.addSample(sample(1_000));
+  db.prepare(
+    `INSERT INTO samples (at, thermal, cpu, load, threads, procs) VALUES (2000, 0, 5, 0, 'not json', '[]')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO samples (at, thermal, cpu, load, threads, procs) VALUES (3000, 0, 5, 0, '[{"threadId":7}]', '[]')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO episodes (start_at, end_at, last_hot_at, peak_thermal, peak_cpu, samples, culprits, others)
+     VALUES (1, 2, 2, 0, 90, 3, '{"oops":true}', '[]')`,
+  ).run();
+  assert.deepEqual(store.samples(0, 10_000).map((row) => row.at), [1_000]);
+  assert.equal(store.latest()?.at, 1_000);
+  assert.deepEqual(store.episodes(0, 10, 10), []);
+});

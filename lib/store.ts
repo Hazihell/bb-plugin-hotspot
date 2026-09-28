@@ -8,7 +8,8 @@
  * host, so the plugin ships no native module of its own.
  */
 import type Database from "better-sqlite3";
-import type { Episode, Sample } from "./schemas";
+import type { z } from "zod";
+import { type Episode, type Sample, episodeSchema, sampleSchema } from "./schemas";
 
 type Db = Database.Database;
 
@@ -47,15 +48,28 @@ interface SampleRow {
   procs: string;
 }
 
-function toSample(row: SampleRow): Sample {
-  return {
+/**
+ * Stored rows are untrusted: an older build or a hand edit may have written
+ * anything. A row that does not parse is skipped, never cast.
+ */
+function parseRow<T>(schema: z.ZodType<T>, build: () => unknown): T | null {
+  try {
+    const parsed = schema.safeParse(build());
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+function toSample(row: SampleRow): Sample | null {
+  return parseRow(sampleSchema, () => ({
     at: row.at,
     thermal: row.thermal,
     cpu: row.cpu,
     load: row.load,
     threads: JSON.parse(row.threads),
     procs: JSON.parse(row.procs),
-  };
+  }));
 }
 
 interface EpisodeRow {
@@ -70,8 +84,8 @@ interface EpisodeRow {
   others: string;
 }
 
-function toEpisode(row: EpisodeRow): Episode {
-  return {
+function toEpisode(row: EpisodeRow): Episode | null {
+  return parseRow(episodeSchema, () => ({
     id: row.id,
     startAt: row.start_at,
     endAt: row.end_at,
@@ -81,8 +95,10 @@ function toEpisode(row: EpisodeRow): Episode {
     samples: row.samples,
     culprits: JSON.parse(row.culprits),
     others: JSON.parse(row.others),
-  };
+  }));
 }
+
+const present = <T>(value: T | null): value is T => value !== null;
 
 function episodeParams(episode: Episode) {
   return {
@@ -105,7 +121,7 @@ export function createStore(db: Db) {
   const selectSamples = db.prepare(
     `SELECT * FROM samples WHERE at >= ? AND at <= ? ORDER BY at`,
   );
-  const selectLatest = db.prepare(`SELECT * FROM samples ORDER BY at DESC LIMIT 1`);
+  const selectLatest = db.prepare(`SELECT * FROM samples ORDER BY at DESC LIMIT 10`);
   const deleteSamples = db.prepare(`DELETE FROM samples WHERE at < ?`);
   const insertEpisode = db.prepare(
     `INSERT INTO episodes
@@ -140,11 +156,11 @@ export function createStore(db: Db) {
       });
     },
     samples(from: number, to: number): Sample[] {
-      return (selectSamples.all(from, to) as SampleRow[]).map(toSample);
+      return (selectSamples.all(from, to) as SampleRow[]).map(toSample).filter(present);
     },
+    /** The newest sample that parses. */
     latest(): Sample | null {
-      const row = selectLatest.get() as SampleRow | undefined;
-      return row === undefined ? null : toSample(row);
+      return (selectLatest.all() as SampleRow[]).map(toSample).find(present) ?? null;
     },
     /** Insert a new episode or update a stored one; returns it with its id. */
     saveEpisode(episode: Episode): Episode {
@@ -157,7 +173,7 @@ export function createStore(db: Db) {
     },
     /** Episodes overlapping [from, to], newest first. */
     episodes(from: number, to: number, limit: number): Episode[] {
-      return (selectEpisodes.all({ from, to, limit }) as EpisodeRow[]).map(toEpisode);
+      return (selectEpisodes.all({ from, to, limit }) as EpisodeRow[]).map(toEpisode).filter(present);
     },
     episode(id: number): Episode | null {
       const row = selectEpisode.get(id) as EpisodeRow | undefined;

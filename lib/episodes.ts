@@ -8,9 +8,9 @@
  * over the episode's hot samples, so a thread that burned hard for the whole
  * episode outranks one that spiked once.
  */
-import type { Episode, Sample } from "./schemas";
+import { type DetectorState, type Episode, type Sample, detectorStateSchema } from "./schemas";
 
-export type { Culprit, Episode, OtherCulprit } from "./schemas";
+export type { Culprit, DetectorState, Episode, OtherCulprit } from "./schemas";
 
 export interface DetectorConfig {
   cpuThreshold: number;
@@ -22,14 +22,6 @@ export interface DetectorConfig {
    * streak, so hours of silence never merge into one episode.
    */
   maxGapMs: number;
-}
-
-export interface DetectorState {
-  /** Hot samples seen so far that have not yet opened an episode. */
-  streak: Episode | null;
-  open: Episode | null;
-  normalStreak: number;
-  lastAt: number | null;
 }
 
 export interface StepResult {
@@ -44,6 +36,15 @@ export const MAX_CULPRITS = 50;
 
 export function initialState(): DetectorState {
   return { streak: null, open: null, normalStreak: 0, lastAt: null };
+}
+
+/**
+ * Detector state read back from storage. Anything that does not parse, such
+ * as state written by an older build, starts the detector over.
+ */
+export function restoreState(stored: unknown): DetectorState {
+  const parsed = detectorStateSchema.safeParse(stored);
+  return parsed.success ? parsed.data : initialState();
 }
 
 export function isHot(sample: Pick<Sample, "thermal" | "cpu">, cpuThreshold: number): boolean {
