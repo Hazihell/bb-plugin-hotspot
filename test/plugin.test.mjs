@@ -110,3 +110,15 @@ test("detector state kept in KV by an earlier build is adopted once and the key 
   assert.deepEqual(createStore(bb.storage.database()).detectorState().streak, streak);
   assert.equal(harness.registrations.services.length, 1);
 });
+
+test("an episode left open behind a reset detector state is closed at load", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
+  await plugin(bb);
+  const db = bb.storage.database();
+  const orphan = createStore(db).saveEpisode({
+    id: null, startAt: 1_000, endAt: null, lastHotAt: 4_000, peakThermal: 2, peakCpu: 90, samples: 3, culprits: [], others: [],
+  });
+  db.prepare(`INSERT OR REPLACE INTO state (key, value) VALUES ('detector', '{"garbage":true}')`).run();
+  const reloaded = await harness.reload(plugin);
+  assert.equal(createStore(reloaded.bb.storage.database()).episode(orphan.id).endAt, 4_000);
+});

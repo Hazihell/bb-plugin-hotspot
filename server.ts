@@ -152,6 +152,8 @@ export default async function plugin(bb: BbPluginApi, deps: PluginDeps = {}) {
     store.saveDetectorState(detector);
     await bb.storage.kv.delete(LEGACY_DETECTOR_KEY);
   }
+  const strays = store.closeStrayEpisodes(detector.open?.id ?? null);
+  if (strays > 0) bb.log.info(`closed ${strays} episode(s) the detector no longer tracks`);
 
   async function record(at: number, signal: AbortSignal): Promise<void> {
     const { sampleIntervalSeconds, cpuThreshold } = await settings.get();

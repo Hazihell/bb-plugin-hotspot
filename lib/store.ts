@@ -158,6 +158,9 @@ export function createStore(db: Db) {
   const upsertState = db.prepare(
     `INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
   );
+  const closeStray = db.prepare(
+    `UPDATE episodes SET end_at = last_hot_at WHERE end_at IS NULL AND id IS NOT @keep`,
+  );
   const deleteEpisodes = db.prepare(
     `DELETE FROM episodes WHERE end_at IS NOT NULL AND end_at < ?`,
   );
@@ -198,6 +201,15 @@ export function createStore(db: Db) {
 
   return {
     commitStep,
+    /**
+     * End every stored open episode except `keepId` at its last hot sample.
+     * An episode is only open while the detector holds it; one left open by
+     * a reset or unreadable detector state would otherwise read "ongoing"
+     * forever and never age out.
+     */
+    closeStrayEpisodes(keepId: number | null): number {
+      return closeStray.run({ keep: keepId }).changes;
+    },
     saveDetectorState(state: DetectorState): void {
       upsertState.run(DETECTOR_KEY, JSON.stringify(state));
     },

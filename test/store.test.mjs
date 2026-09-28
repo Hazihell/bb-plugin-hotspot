@@ -73,3 +73,21 @@ test("readings carry only time, CPU and thermal level", () => {
     { at: 2_000, cpu: 55, thermal: null },
   ]);
 });
+
+test("closeStrayEpisodes ends every open episode but the detector's own", () => {
+  const store = openStore();
+  const base = { endAt: null, peakThermal: 1, peakCpu: 90, samples: 3, culprits: [], others: [] };
+  const stray = store.saveEpisode({ ...base, id: null, startAt: 1_000, lastHotAt: 5_000 });
+  const current = store.saveEpisode({ ...base, id: null, startAt: 9_000, lastHotAt: 9_500 });
+  const closed = store.saveEpisode({ ...base, id: null, startAt: 100, lastHotAt: 200, endAt: 200 });
+
+  assert.equal(store.closeStrayEpisodes(current.id), 1);
+  assert.equal(store.episode(stray.id).endAt, 5_000);
+  assert.equal(store.episode(current.id).endAt, null);
+  assert.equal(store.episode(closed.id).endAt, 200);
+
+  // With no current episode, every open one is closed and can age out.
+  assert.equal(store.closeStrayEpisodes(null), 1);
+  assert.equal(store.episode(current.id).endAt, 9_500);
+  assert.equal(store.prune(30 * DAY_MS, 7).episodes, 3);
+});
