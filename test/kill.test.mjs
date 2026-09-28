@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyKill, isInteractiveShell, parseKillLine, planKill, readKillRows } from "../lib/kill.ts";
+import { applyKill, checkInteractiveCaller, isInteractiveShell, parseKillLine, planKill, readKillRows } from "../lib/kill.ts";
 
 const THREAD = "thr_target0001";
 const OTHER = "thr_other00001";
@@ -8,8 +8,8 @@ const UID = 501;
 const START = "Mon Sep 28 14:04:23 2026";
 
 /** One `ps -axwwE -o pid=,ppid=,uid=,pcpu=,lstart=,command=` line. */
-function line(pid, ppid, command, { uid = UID, cpu = 0, start = START } = {}) {
-  return `${String(pid).padStart(6)} ${String(ppid).padStart(6)} ${String(uid).padStart(5)} ${cpu.toFixed(1).padStart(5)} ${start}     ${command}`;
+function line(pid, ppid, command, { uid = UID, cpu = 0, start = START, tty = "??" } = {}) {
+  return `${String(pid).padStart(6)} ${String(ppid).padStart(6)} ${String(uid).padStart(5)} ${tty.padEnd(8)} ${cpu.toFixed(1).padStart(5)} ${start}     ${command}`;
 }
 
 const BB = "/Applications/bb.app/Contents/MacOS/bb";
@@ -59,6 +59,7 @@ test("parses pid, uid, start time, argv and the thread from a ps -E line", () =>
     pid: 311,
     ppid: 310,
     uid: 501,
+    tty: null,
     cpuPercent: 12.5,
     startedAt: START,
     argv: "node next dev",
@@ -194,6 +195,27 @@ test("an agent started through npx is spared down to its own shells", () => {
   assert.match(reasons[302], /launcher/);
   assert.match(reasons[303], /helper/);
   assert.match(reasons[304], /helper/);
+});
+
+test("kill --yes is accepted only from a terminal that no agent runs", () => {
+  const cli = `node /Applications/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app/host-daemon/dist/bb hotspot kill ${THREAD} --yes`;
+  const fromTerminal = rowsOf(table({
+    900: line(900, 1, "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"),
+    901: line(901, 900, "login -pf me", { uid: 0, tty: "ttys003" }),
+    902: line(902, 901, "-zsh", { tty: "ttys003" }),
+    903: line(903, 902, cli, { tty: "ttys003" }),
+  }));
+  assert.deepEqual(checkInteractiveCaller(fromTerminal, THREAD), { ok: true });
+
+  // The agent's tool shell: no terminal.
+  const fromAgent = rowsOf(table({ 321: line(321, 320, cli) }));
+  assert.match(checkInteractiveCaller(fromAgent, THREAD).reason, /not run from an interactive terminal/);
+
+  // An agent whose provider gives its commands a pty is still under the bridge.
+  const fromAgentPty = rowsOf(table({ 321: line(321, 320, cli, { tty: "ttys009" }) }));
+  assert.match(checkInteractiveCaller(fromAgentPty, THREAD).reason, /run by an agent/);
+
+  assert.match(checkInteractiveCaller(rowsOf(table()), THREAD).reason, /could not find/);
 });
 
 test("a thread with no work of its own plans nothing", () => {

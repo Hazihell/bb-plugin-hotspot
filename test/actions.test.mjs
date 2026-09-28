@@ -8,8 +8,8 @@ const THREAD = "thr_target0001";
 const START = "Mon Sep 28 14:04:23 2026";
 const uid = process.getuid();
 
-function line(pid, ppid, command, cpu = 0) {
-  return `${pid} ${ppid} ${uid} ${cpu.toFixed(1)} ${START}     ${command}`;
+function line(pid, ppid, command, cpu = 0, tty = "??") {
+  return `${pid} ${ppid} ${uid} ${tty} ${cpu.toFixed(1)} ${START}     ${command}`;
 }
 
 /** BB (and, below it, the plugin host at pid 600), the thread's agent at 300, and a dev server under its shell. */
@@ -22,7 +22,7 @@ const TABLE = [
   line(600, 100, "/Applications/bb.app/Contents/MacOS/bb bb-plugin-host-worker.mjs"),
 ];
 
-async function load({ status = "active" } = {}) {
+async function load({ status = "active", extra = [] } = {}) {
   const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
   harness.sdk.stub("threads.get", async ({ threadId }) => {
     if (threadId !== THREAD) throw Object.assign(new Error("HTTP 404: Thread not found"), { status: 404 });
@@ -33,7 +33,7 @@ async function load({ status = "active" } = {}) {
     stopped.push(threadId);
     return { ok: true };
   });
-  let rows = TABLE.join("\n");
+  let rows = [...TABLE, ...extra].join("\n");
   const signals = [];
   await createHotspot(bb, {
     takeSample: async (at) => ({ at, thermal: 0, cpu: 10, load: 0.1, threads: [], procs: [] }),
@@ -98,6 +98,22 @@ test("bb hotspot kill prints the plan without --yes and applies it with --yes", 
   assert.match(dry.stdout, /Run again with --yes/);
   assert.deepEqual(signals, []);
 
+  // Run from an agent's shell (no terminal, no caller found): refused.
+  const refused = await harness.runCli(["kill", THREAD, "--yes"]);
+  assert.notEqual(refused.exitCode, 0);
+  assert.match(refused.stderr + refused.stdout, /Refusing --yes/);
+  assert.deepEqual(signals, []);
+});
+
+test("bb hotspot kill --yes applies the plan when a person runs it in a terminal", async () => {
+  const cli = `node /Applications/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app/host-daemon/dist/bb hotspot kill ${THREAD} --yes`;
+  const { harness, signals } = await load({
+    extra: [
+      line(900, 1, "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"),
+      line(902, 900, "-zsh", 0, "ttys003"),
+      line(903, 902, cli, 0, "ttys003"),
+    ],
+  });
   const applied = await harness.runCli(["kill", THREAD, "--yes"]);
   assert.equal(applied.exitCode, 0);
   assert.match(applied.stdout, /2 exited on SIGTERM, 0 needed SIGKILL, 0 refused/);

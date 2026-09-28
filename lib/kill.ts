@@ -34,25 +34,28 @@ export interface KillRow extends ProcessRow {
   startedAt: string;
   /** The command line without the environment. */
   argv: string;
+  /** The controlling terminal (`ttys003`, `pts/2`), or null for none. */
+  tty: string | null;
 }
 
-export const DARWIN_KILL_PS = "LC_ALL=C ps -axwwE -o pid=,ppid=,uid=,pcpu=,lstart=,command=";
-export const PORTABLE_KILL_PS = "LC_ALL=C ps -eww -o pid=,ppid=,uid=,pcpu=,lstart=,args=";
+export const DARWIN_KILL_PS = "LC_ALL=C ps -axwwE -o pid=,ppid=,uid=,tty=,pcpu=,lstart=,command=";
+export const PORTABLE_KILL_PS = "LC_ALL=C ps -eww -o pid=,ppid=,uid=,tty=,pcpu=,lstart=,args=";
 
 const KILL_LINE =
-  /^\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/;
+  /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+([\d.]+)\s+([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/;
 
 /** One line of the kill `ps`; the environment, if any, is split off `command`. */
 export function parseKillLine(line: string, environ?: string | null): KillRow | null {
   const match = KILL_LINE.exec(line);
   if (match === null) return null;
-  const { argv, env } = environ === undefined ? splitEnvironment(match[6]) : { argv: match[6], env: environ ?? "" };
+  const { argv, env } = environ === undefined ? splitEnvironment(match[7]) : { argv: match[7], env: environ ?? "" };
   return {
     pid: Number(match[1]),
     ppid: Number(match[2]),
     uid: Number(match[3]),
-    cpuPercent: Number(match[4]),
-    startedAt: match[5].replace(/\s+/g, " "),
+    tty: /^[?-]+$/.test(match[4]) ? null : match[4],
+    cpuPercent: Number(match[5]),
+    startedAt: match[6].replace(/\s+/g, " "),
     argv: argv.trim(),
     name: processName(argv),
     threadId: threadIdFrom(argv, env),
@@ -307,6 +310,30 @@ export function planKill(rows: readonly KillRow[], threadId: string, context: Pl
 /** Same pid, same start time, same command line: the process the plan named. */
 export function sameProcess(target: KillTarget, row: KillRow | undefined): row is KillRow {
   return row !== undefined && row.startedAt === target.startedAt && row.argv === target.argv;
+}
+
+/**
+ * Whether `bb hotspot kill <threadId> --yes` was typed by a person. The CLI
+ * handler runs in the server and cannot see the caller's stdin, so it finds
+ * the calling `bb` process in the table: it must have a controlling terminal
+ * and no provider bridge above it. An agent's shell has neither a terminal
+ * nor, if a provider gives it one, a way out from under its bridge.
+ */
+export function checkInteractiveCaller(rows: readonly KillRow[], threadId: string): { ok: true } | { ok: false; reason: string } {
+  const byPid = new Map(rows.map((row) => [row.pid, row] as const));
+  const callers = rows.filter(
+    (row) => isBbProcess(row) && /\bhotspot\s+kill\b/.test(row.argv) && row.argv.includes(threadId) && /\s--yes\b/.test(row.argv),
+  );
+  if (callers.length === 0) return { ok: false, reason: "could not find the calling bb process to check its terminal" };
+  for (const caller of callers) {
+    if (caller.tty === null) return { ok: false, reason: "it was not run from an interactive terminal" };
+    const seen = new Set<number>();
+    for (let node = byPid.get(caller.ppid); node !== undefined && !seen.has(node.pid); node = byPid.get(node.ppid)) {
+      seen.add(node.pid);
+      if (/bb-provider-bridge/.test(node.argv)) return { ok: false, reason: "it was run by an agent" };
+    }
+  }
+  return { ok: true };
 }
 
 export type Signal = "SIGTERM" | "SIGKILL";

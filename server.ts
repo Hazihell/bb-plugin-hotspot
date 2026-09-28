@@ -15,7 +15,7 @@ import os from "node:os";
 import { PluginCliError, cliCommand, defineCli, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { type KillPlanView, type KillResultView, type Range, rpcContract, threadIdSchema } from "./lib/contract";
-import { type KillPlan, type KillRow, type PlanContext, type Signal, applyKill, planKill, readKillRows } from "./lib/kill";
+import { type KillPlan, type KillRow, type PlanContext, type Signal, applyKill, checkInteractiveCaller, planKill, readKillRows } from "./lib/kill";
 import { systemProcessSource } from "./lib/procs";
 import { type DetectorState, type Episode, restoreState, step } from "./lib/episodes";
 import {
@@ -496,6 +496,15 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
               const lines = describeKillPlan(plan);
               if (plan.targets.length > 0) lines.push("", "Nothing was signalled. Run again with --yes to apply.");
               return { exitCode: 0, stdout: clampText(lines.join("\n"), CLI_MAX_CHARS) };
+            }
+            // Kills from the CLI need a person at a terminal; agents' shells
+            // are refused here, and the popover is the one-click path.
+            const caller = checkInteractiveCaller(await killDeps.readRows(), threadId.data);
+            if (!caller.ok) {
+              throw new PluginCliError(`Refusing --yes: ${caller.reason}.`, {
+                code: "not_interactive",
+                hint: "Kill from the Hotspot popover in the BB sidebar footer, or run this command yourself in a terminal. Without --yes it only prints the plan.",
+              });
             }
             const applied = await applyPlan(plan.planId);
             if (input.options.json) return { exitCode: 0, stdout: JSON.stringify({ plan, applied }) };
