@@ -6,7 +6,15 @@
  * interval; per-process CPU comes from `ps`, which is only used for ranking.
  */
 import os from "node:os";
-import { attributeThreads, groupByThread, readProcesses, topUnattributed } from "./procs";
+import {
+  type ProcessRow,
+  type ProcessSource,
+  attributeThreads,
+  groupByThread,
+  readProcesses,
+  systemProcessSource,
+  topUnattributed,
+} from "./procs";
 import type { Sample } from "./schemas";
 import { readThermal } from "./thermal";
 
@@ -42,6 +50,8 @@ function clampPercent(value: number): number {
 
 const round = (value: number) => Math.round(value * 10) / 10;
 
+const loadPerCore = (cores: number) => Math.round((os.loadavg()[0] / cores) * 100) / 100;
+
 /**
  * Looks threads up in BB. The result holds every id BB knows, with its title
  * or null; an id missing from it does not exist (a `thr_…` string in some
@@ -49,17 +59,42 @@ const round = (value: number) => Math.round(value * 10) / 10;
  */
 export type ThreadResolver = (threadIds: string[]) => Promise<Map<string, string | null>>;
 
-export function createSampler(resolveThreads: ThreadResolver) {
-  let previousTicks: CpuTicks | null = null;
+export interface SamplerOptions {
+  processes?: ProcessSource;
+  thermal?: () => Promise<number | null>;
+  /** Told when `ps` fails; the sample is still taken, without processes. */
+  onProcessError?: (error: unknown) => void;
+}
+
+/** Less than this much CPU time per core since the last reading is too noisy to trust. */
+const MIN_TICK_MS_PER_CORE = 1_000;
+
+export function createSampler(resolveThreads: ThreadResolver, options: SamplerOptions = {}) {
+  const source = options.processes ?? systemProcessSource;
+  const thermalReader = options.thermal ?? readThermal;
   const cores = Math.max(1, os.cpus().length);
+  let previousTicks: CpuTicks = readTicks();
 
   return async function takeSample(now = Date.now()): Promise<Sample> {
-    const [rows, thermal] = await Promise.all([readProcesses(), readThermal()]);
+    const [rows, thermal] = await Promise.all([
+      readProcesses(source).catch((error: unknown): ProcessRow[] | null => {
+        options.onProcessError?.(error);
+        return null;
+      }),
+      thermalReader(),
+    ]);
     const ticks = readTicks();
-    // The first sample after a load has no interval yet; `ps` is the fallback.
-    const psCpu = clampPercent(rows.reduce((sum, row) => sum + row.cpuPercent, 0) / cores);
-    const cpu = (previousTicks === null ? null : cpuBetween(previousTicks, ticks)) ?? psCpu;
+    const kernelCpu = cpuBetween(previousTicks, ticks);
+    const enoughTicks = ticks.total - previousTicks.total >= MIN_TICK_MS_PER_CORE * cores;
     previousTicks = ticks;
+    // Right after a load the tick interval is too short to mean anything, so
+    // the `ps` sum stands in; without `ps`, the short interval is all there is.
+    const psCpu =
+      rows === null ? null : clampPercent(rows.reduce((sum, row) => sum + row.cpuPercent, 0) / cores);
+    const cpu = (enoughTicks ? kernelCpu : (psCpu ?? kernelCpu)) ?? 0;
+    if (rows === null) {
+      return { at: now, thermal, cpu, load: loadPerCore(cores), threads: [], procs: [] };
+    }
 
     const attribution = attributeThreads(rows);
     // A few spare candidates so a dropped unknown id does not shorten the list.
@@ -74,7 +109,7 @@ export function createSampler(resolveThreads: ThreadResolver) {
       at: now,
       thermal,
       cpu,
-      load: Math.round((os.loadavg()[0] / cores) * 100) / 100,
+      load: loadPerCore(cores),
       threads: threads.map((entry) => ({
         threadId: entry.threadId,
         title: known.get(entry.threadId) ?? null,

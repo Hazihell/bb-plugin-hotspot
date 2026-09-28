@@ -12,12 +12,37 @@
  * the id. A bare `thr_…` anywhere in argv no longer counts, only a worktree
  * path. A process with no id of its own inherits its nearest ancestor's, so
  * a compiler forked by an agent is billed to that agent's thread. Rows are
- * ranked by CPU, not memory.
+ * ranked by CPU, not memory. Off macOS, `ps` has no `-E`, so the
+ * environment comes from `/proc/<pid>/environ` instead.
  */
 import { exec } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 
 const run = promisify(exec);
+
+/** Where the process table comes from; injected so tests can fake any OS. */
+export interface ProcessSource {
+  platform: NodeJS.Platform;
+  exec(command: string): Promise<string>;
+  /** The NUL-separated environment of `pid`, or null when unreadable. */
+  readEnviron(pid: number): Promise<string | null>;
+}
+
+export const systemProcessSource: ProcessSource = {
+  platform: process.platform,
+  async exec(command) {
+    const { stdout } = await run(command, { timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+    return stdout;
+  },
+  async readEnviron(pid) {
+    // Only readable for processes this user owns, which covers BB's own.
+    return readFile(`/proc/${pid}/environ`, "utf8").catch(() => null);
+  },
+};
+
+export const DARWIN_PS = "ps -axE -o pid=,ppid=,pcpu=,command=";
+export const PORTABLE_PS = "ps -eo pid=,ppid=,pcpu=,args=";
 
 export interface ProcessRow {
   pid: number;
@@ -117,17 +142,35 @@ export function parsePs(stdout: string): ProcessRow[] {
 }
 
 /**
- * Read every process once. ~80 ms for a full table with environments.
+ * Read every process once. ~80 ms on macOS for a full table with
+ * environments. Throws when `ps` itself fails.
  *
- * `-E` only shows the environment of processes owned by the same user, which
+ * Environments are only visible for processes owned by the same user, which
  * is every process BB launches. Root daemons simply carry no thread id.
  */
-export async function readProcesses(): Promise<ProcessRow[]> {
-  const { stdout } = await run("ps -axE -o pid=,ppid=,pcpu=,command=", {
-    timeout: 15_000,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  return parsePs(stdout);
+export async function readProcesses(
+  source: ProcessSource = systemProcessSource,
+): Promise<ProcessRow[]> {
+  if (source.platform === "darwin") return parsePs(await source.exec(DARWIN_PS));
+  const stdout = await source.exec(PORTABLE_PS);
+  const lines = stdout
+    .split("\n")
+    .map((line) => /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(.*)$/.exec(line))
+    .filter((match): match is RegExpExecArray => match !== null);
+  return Promise.all(
+    lines.map(async (match) => {
+      const pid = Number(match[1]);
+      const argv = match[4];
+      const env = (await source.readEnviron(pid)) ?? "";
+      return {
+        pid,
+        ppid: Number(match[2]),
+        cpuPercent: Number(match[3]),
+        name: processName(argv),
+        threadId: threadIdFrom(argv, env),
+      };
+    }),
+  );
 }
 
 /**

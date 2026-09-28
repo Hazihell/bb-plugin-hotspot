@@ -116,7 +116,15 @@ export default async function plugin(bb: BbPluginApi) {
     return resolved;
   }
 
-  const takeSample = createSampler(resolveThreads);
+  let processErrorLogged = false;
+  const takeSample = createSampler(resolveThreads, {
+    // Logged once per load: a missing `ps` fails every sample the same way.
+    onProcessError(error) {
+      if (processErrorLogged) return;
+      processErrorLogged = true;
+      bb.log.warn(`ps failed; recording CPU without threads: ${error instanceof Error ? error.message : String(error)}`);
+    },
+  });
 
   // The detector's streak survives reloads in KV; the episodes themselves
   // live in SQLite, and the open one is rewritten there after every sample.
