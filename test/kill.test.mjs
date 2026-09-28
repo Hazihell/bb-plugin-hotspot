@@ -247,6 +247,49 @@ test("Codex's commands under sandbox-exec are work; Codex itself is spared", () 
   assert.match(reasons[305], /helper/);
 });
 
+test("a Homebrew terminal opened from a thread is a wall, and so is tmux", () => {
+  const stdout = table({
+    800: line(800, 1, `/opt/homebrew/Caskroom/alacritty/0.15.1/Alacritty.app/Contents/MacOS/alacritty BB_THREAD_ID=${THREAD}`),
+    801: line(801, 800, `/bin/zsh -c tmux attach BB_THREAD_ID=${THREAD}`),
+    802: line(802, 801, "tmux attach"),
+    810: line(810, 1, `tmux new-session -d BB_THREAD_ID=${THREAD}`),
+    811: line(811, 810, "-zsh"),
+    812: line(812, 811, "node /Users/me/app/server.js", { cpu: 30 }),
+    820: line(820, 1, `/opt/homebrew/bin/kitty BB_THREAD_ID=${THREAD}`),
+    821: line(821, 820, "/bin/zsh -c npm start"),
+    310: null,
+    311: null,
+    312: null,
+    313: null,
+  });
+  const plan = planKill(rowsOf(stdout), THREAD, context);
+  assert.deepEqual(plan.targets.map((target) => target.pid), []);
+  const reasons = Object.fromEntries(plan.excluded.map((entry) => [entry.pid, entry.reason]));
+  assert.match(reasons[800], /a terminal/);
+  assert.match(reasons[801], /under alacritty \(pid 800\)/);
+  assert.match(reasons[810], /a terminal/);
+  assert.match(reasons[812], /under -zsh \(pid 811\)/);
+  assert.match(reasons[820], /a terminal/);
+});
+
+test("an app bundle anywhere is a wall; an argument naming a bundle is not", () => {
+  const stdout = table({
+    850: line(850, 1, `/Users/me/Applications/Zed.app/Contents/MacOS/zed BB_THREAD_ID=${THREAD}`),
+    851: line(851, 850, "/bin/zsh -c cargo build"),
+    860: line(860, 1, `/opt/homebrew/bin/node /Users/me/tools/Fake.app/Contents/x.js BB_THREAD_ID=${THREAD}`, { cpu: 5 }),
+    870: line(870, 1, `/Users/me/Library/Caches/ms-playwright/chromium-1187/chrome-mac/Chromium.app/Contents/MacOS/Chromium --headless BB_THREAD_ID=${THREAD}`),
+    310: null,
+    311: null,
+    312: null,
+    313: null,
+  });
+  const plan = planKill(rowsOf(stdout), THREAD, context);
+  const reasons = Object.fromEntries(plan.excluded.map((entry) => [entry.pid, entry.reason]));
+  assert.match(reasons[850], /an app/);
+  assert.match(reasons[851], /under zed/);
+  assert.deepEqual(plan.targets.map((target) => target.pid).sort(), [860, 870]);
+});
+
 test("a thread with no work of its own plans nothing", () => {
   const plan = planKill(rowsOf(table()), "thr_nothing0001", context);
   assert.deepEqual(plan, { threadId: "thr_nothing0001", targets: [], excluded: [] });
