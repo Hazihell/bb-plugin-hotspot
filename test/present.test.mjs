@@ -9,6 +9,7 @@ import {
   gapLabel,
   labelWidth,
   processSummary,
+  splitIdle,
   threadMeta,
   timeTicks,
   verdict,
@@ -85,6 +86,21 @@ test("thread CPU and meta line", () => {
   assert.equal(threadMeta(7, true), "7 processes · running a turn");
   assert.equal(threadMeta(1, false), "1 process · no turn running");
   assert.equal(threadMeta(2, null), "2 processes");
+});
+
+test("splitIdle folds threads under 1% CPU and 1 GB, busy ones first", () => {
+  const GB = 1024 ** 3;
+  const list = [
+    { threadId: "a", cpu: 0.2, memBytes: 300 * 1024 ** 2 },
+    { threadId: "b", cpu: 58, memBytes: 2 * GB },
+    { threadId: "c", cpu: 0.1, memBytes: 1.5 * GB },
+    { threadId: "d", cpu: 0.7, memBytes: 100 },
+    { threadId: "e", cpu: 0, memBytes: null },
+  ];
+  const { busy, idle } = splitIdle(list);
+  assert.deepEqual(busy.map((thread) => thread.threadId), ["b", "d", "c"]);
+  assert.deepEqual(idle.map((thread) => thread.threadId), ["a", "e"]);
+  assert.deepEqual(splitIdle([]), { busy: [], idle: [] });
 });
 
 test("day ticks land on whole hours and thin out when narrow", () => {
