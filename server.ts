@@ -6,15 +6,24 @@
 // feeds the episode detector (lib/episodes.ts), which opens, extends and
 // closes stored hot episodes and ranks their culprit threads. The sampler reads
 // the server's own machine: `ps`, `notifyutil` and `os`, never a remote host.
-// Monitoring is read-only; nothing here signals, renices or kills a process.
+// Sampling only reads. The one thing that signals a process is the user's own
+// "kill this thread's processes" (lib/kill.ts), from the footer popover or
+// `bb hotspot kill`; it is never offered to agents, and neither is stopping a
+// thread's turn.
+import { randomUUID } from "node:crypto";
+import os from "node:os";
 import { PluginCliError, cliCommand, defineCli, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { type Range, rpcContract } from "./lib/contract";
+import { type KillPlanView, type KillResultView, type Range, rpcContract, threadIdSchema } from "./lib/contract";
+import { type KillPlan, type KillRow, type PlanContext, type Signal, applyKill, planKill, readKillRows } from "./lib/kill";
+import { systemProcessSource } from "./lib/procs";
 import { type DetectorState, type Episode, restoreState, step } from "./lib/episodes";
 import {
   bucketSamples,
   clampText,
   describeEpisode,
+  describeKillPlan,
+  describeKillResult,
   describeSample,
   describeWindow,
   formatWhen,
@@ -70,9 +79,36 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/** How long a kill plan can be applied after it is shown. */
+const PLAN_TTL_MS = 2 * 60_000;
+const MAX_PLANS = 20;
+/** Thread statuses in which a turn is running and can be stopped. */
+const RUNNING = new Set(["active", "starting"]);
+
+/** Resolves after `ms`. */
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /** What tests may inject into createHotspot. */
 export interface HotspotDeps {
   takeSample?: (at: number) => Promise<Sample>;
+  /** The process table and signals the kill action uses. */
+  kill?: {
+    readRows: () => Promise<KillRow[]>;
+    signal: (pid: number, signal: Signal) => void;
+    sleep?: (ms: number) => Promise<void>;
+    /** The plugin server's pid; its ancestors are BB. */
+    selfPid?: number;
+  };
+}
+
+/** A process and its ancestors in `rows`: the chain that is running Hotspot. */
+function ancestry(rows: readonly KillRow[], pid: number): Set<number> {
+  const byPid = new Map(rows.map((row) => [row.pid, row] as const));
+  const chain = new Set<number>([pid]);
+  for (let row = byPid.get(pid); row !== undefined && row.ppid > 0 && !chain.has(row.ppid); row = byPid.get(row.ppid)) {
+    chain.add(row.ppid);
+  }
+  return chain;
 }
 
 /** BB's entry point: the plugin with its real sampler. */
@@ -104,6 +140,11 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
     toast: {
       type: "boolean",
       label: "Show a toast when an episode starts",
+      default: true,
+    },
+    allowKill: {
+      type: "boolean",
+      label: "Offer \"Kill processes\" for a thread (footer popover and bb hotspot kill)",
       default: true,
     },
   });
@@ -211,7 +252,122 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
     bb.realtime.publish(EPISODE_OPENED, signal);
   }
 
+  // Killing a thread's processes: plan, show, then apply by plan id only.
+  const killDeps = deps.kill ?? {
+    readRows: () => readKillRows(systemProcessSource),
+    signal: (pid: number, signal: Signal) => process.kill(pid, signal),
+  };
+  const selfPid = deps.kill?.selfPid ?? process.pid;
+  const cores = Math.max(1, os.cpus().length);
+  const machineShare = (cpuPercent: number) => Math.round((cpuPercent / cores) * 10) / 10;
+  const plans = new Map<string, { plan: KillPlan; context: PlanContext; expiresAt: number }>();
+
+  async function requireKillAllowed(): Promise<void> {
+    if (!(await settings.get()).allowKill) {
+      throw new PluginCliError("Killing thread processes is turned off (setting allowKill).", {
+        code: "kill_disabled",
+        hint: "bb plugin config hotspot set allowKill true",
+      });
+    }
+  }
+
+  async function threadTitle(threadId: string): Promise<string | null> {
+    const known = await directory.resolve([threadId]);
+    if (!known.has(threadId)) {
+      throw new PluginCliError(`No BB thread ${threadId}.`, { code: "thread_not_found" });
+    }
+    return known.get(threadId) ?? null;
+  }
+
+  async function makePlan(threadId: string): Promise<KillPlanView> {
+    await requireKillAllowed();
+    const title = await threadTitle(threadId);
+    const rows = await killDeps.readRows();
+    const context: PlanContext = {
+      uid: process.getuid?.() ?? -1,
+      selfPids: ancestry(rows, selfPid),
+    };
+    const plan = planKill(rows, threadId, context);
+    const now = Date.now();
+    for (const [id, entry] of plans) if (entry.expiresAt <= now) plans.delete(id);
+    while (plans.size >= MAX_PLANS) plans.delete(plans.keys().next().value as string);
+    const planId = randomUUID();
+    const expiresAt = now + PLAN_TTL_MS;
+    plans.set(planId, { plan, context, expiresAt });
+    return {
+      planId,
+      expiresAt,
+      threadId,
+      title,
+      targets: plan.targets.map((target) => ({
+        pid: target.pid,
+        name: target.name,
+        cpu: machineShare(target.cpuPercent),
+        command: target.argv.slice(0, 300),
+      })),
+      excluded: plan.excluded.map((entry) => ({
+        pid: entry.pid,
+        name: entry.name,
+        cpu: machineShare(entry.cpuPercent),
+        reason: entry.reason,
+      })),
+    };
+  }
+
+  async function applyPlan(planId: string): Promise<KillResultView> {
+    await requireKillAllowed();
+    const entry = plans.get(planId);
+    // One use per plan: a second click cannot replay it.
+    plans.delete(planId);
+    if (entry === undefined || entry.expiresAt <= Date.now()) {
+      throw new PluginCliError("That kill plan expired or was already used. Review a fresh plan.", {
+        code: "plan_expired",
+      });
+    }
+    const result = await applyKill(entry.plan, {
+      readRows: killDeps.readRows,
+      context: entry.context,
+      signal: killDeps.signal,
+      sleep: killDeps.sleep ?? wait,
+      log: (message) => bb.log.info(message),
+    });
+    return {
+      ...result,
+      outcomes: result.outcomes.map((outcome) => ({ ...outcome, cpu: machineShare(outcome.cpuPercent) })),
+    };
+  }
+
+  async function isRunning(threadId: string): Promise<boolean> {
+    try {
+      const thread = await bb.sdk.threads.get({ threadId });
+      return RUNNING.has(thread.status);
+    } catch {
+      return false;
+    }
+  }
+
   bb.rpc.register(rpcContract, {
+    async overview() {
+      const latest = store.latest();
+      const threadIds = (latest?.threads ?? []).slice(0, TOP_THREADS).map((entry) => entry.threadId);
+      const states = await Promise.all(threadIds.map(async (threadId) => [threadId, await isRunning(threadId)] as const));
+      return {
+        episodes: await viewEpisodes(store.episodes(0, Date.now(), 3), 3),
+        running: Object.fromEntries(states),
+        allowKill: (await settings.get()).allowKill,
+      };
+    },
+    killPlan: ({ threadId }) => makePlan(threadId),
+    killApply: ({ planId }) => applyPlan(planId),
+    async stopTurn({ threadId }) {
+      await threadTitle(threadId);
+      if (!(await isRunning(threadId))) {
+        throw new PluginCliError(`Thread ${threadId} is not running a turn.`, { code: "not_running" });
+      }
+      await bb.sdk.threads.stop({ threadId });
+      bb.log.info(`stopped the running turn of ${threadId} from the footer popover`);
+      return { ok: true as const };
+    },
     async status() {
       const { cpuThreshold, sampleIntervalSeconds } = await settings.get();
       const [open] = detector.open === null ? [null] : await viewEpisodes([detector.open], CULPRITS_SHOWN);
@@ -319,6 +475,34 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
       name: "hotspot",
       summary: "When the Mac ran hot and which BB thread caused it",
       commands: {
+        kill: cliCommand({
+          summary: "Plan (and with --yes, apply) killing a thread's work processes: dev servers, builds, test runners",
+          positionals: [{ name: "threadId", description: "The thread whose processes to stop (thr_…)", required: true }],
+          options: {
+            yes: { type: "boolean", description: "Apply the plan: SIGTERM, then SIGKILL after 5 s for survivors" },
+            json: { type: "boolean", description: "Emit JSON" },
+          },
+          async run(input) {
+            const threadId = threadIdSchema.safeParse(input.positionals.threadId);
+            if (!threadId.success) {
+              throw new PluginCliError(`"${input.positionals.threadId}" is not a thread id.`, {
+                code: "invalid_thread",
+                hint: "Pass an id like thr_abc12345; `bb hotspot status` lists the busiest threads.",
+              });
+            }
+            const plan = await makePlan(threadId.data);
+            if (!input.options.yes || plan.targets.length === 0) {
+              if (input.options.json) return { exitCode: 0, stdout: JSON.stringify({ plan, applied: null }) };
+              const lines = describeKillPlan(plan);
+              if (plan.targets.length > 0) lines.push("", "Nothing was signalled. Run again with --yes to apply.");
+              return { exitCode: 0, stdout: clampText(lines.join("\n"), CLI_MAX_CHARS) };
+            }
+            const applied = await applyPlan(plan.planId);
+            if (input.options.json) return { exitCode: 0, stdout: JSON.stringify({ plan, applied }) };
+            const lines = [...describeKillPlan(plan), "", ...describeKillResult(applied)];
+            return { exitCode: 0, stdout: clampText(lines.join("\n"), CLI_MAX_CHARS) };
+          },
+        }),
         status: cliCommand({
           summary: "Latest sample: thermal level, CPU, load, busiest threads and processes",
           options: { json: { type: "boolean", description: "Emit JSON" } },

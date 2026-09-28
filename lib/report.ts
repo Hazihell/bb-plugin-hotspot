@@ -2,6 +2,7 @@
  * Read-side shaping shared by the page, the CLI and the agent tool.
  */
 import { thermalLabel } from "./labels";
+import type { KillPlanView, KillResultView } from "./contract";
 import type { EpisodeView, Sample, SampleView, TimelinePoint } from "./schemas";
 
 /**
@@ -186,4 +187,32 @@ export function clampText(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   const cut = text.lastIndexOf("\n", maxChars - 40);
   return `${text.slice(0, cut > 0 ? cut : maxChars - 40)}\n… (truncated)`;
+}
+
+const processLine = (entry: { name: string; pid: number; cpu: number }) =>
+  `  ${entry.name.slice(0, 40).padEnd(40)} pid ${String(entry.pid).padEnd(7)} ${`${entry.cpu.toFixed(1)}%`.padStart(6)}`;
+
+/** A kill plan as the CLI prints it: what gets SIGTERM and what is spared, with the reason. */
+export function describeKillPlan(plan: KillPlanView): string[] {
+  const name = plan.title === null ? plan.threadId : `"${plan.title}" (${plan.threadId})`;
+  const lines =
+    plan.targets.length === 0
+      ? [`Nothing to kill in ${name}.`]
+      : [
+          `Kill plan for ${name}: ${plan.targets.length} process(es) get SIGTERM, then SIGKILL after 5 s if still running:`,
+          ...plan.targets.map(processLine),
+        ];
+  if (plan.excluded.length > 0) {
+    lines.push("", "Spared:", ...plan.excluded.map((entry) => `${processLine(entry)}  ${entry.reason}`));
+  }
+  return lines;
+}
+
+export function describeKillResult(result: KillResultView): string[] {
+  return [
+    `Killed in ${result.threadId}: ${result.terminated} exited on SIGTERM, ${result.killed} needed SIGKILL, ${result.refused} refused.`,
+    ...result.outcomes.map(
+      (outcome) => `${processLine(outcome)}  ${outcome.result}${outcome.detail === null ? "" : ` (${outcome.detail})`}`,
+    ),
+  ];
 }
