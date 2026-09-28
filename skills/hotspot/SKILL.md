@@ -47,9 +47,10 @@ spared, with the reason; nothing is signalled without `--yes`. With `--yes`
 it applies that plan: SIGTERM, then SIGKILL after 5 seconds for survivors
 that are still the same process. `--yes` is refused unless a person typed
 the command in a terminal: the calling `bb` process must have a
-controlling terminal and no provider bridge above it, so an agent's shell
-cannot apply a kill. Agents may run the dry run; to kill, point the user to
-the popover. There is no agent tool for killing processes or stopping a
+controlling terminal and no provider bridge above it. That stops an agent
+applying a kill by accident; it does not stop a determined one, which could
+signal the processes itself. Agents may run the dry run; to kill, point the
+user to the popover. There is no agent tool for killing processes or stopping a
 thread's turn, on purpose.
 
 ## What a kill touches
@@ -64,16 +65,20 @@ thread, even when it inherited the id:
   and Hotspot's own process chain;
 - other users' processes (`login`, `sudo`), system binaries (`/System`,
   `/usr/libexec`, `/usr/sbin`, `/sbin`);
-- app bundles in `/Applications` unless they run `--headless` or with a
-  remote-debugging port, so an app opened from a thread (Orca, VS Code,
-  Docker) keeps its terminals and helpers;
+- any executable inside a `*.app/Contents/` bundle, wherever it is installed
+  (`/Applications`, `~/Applications`, a Homebrew cask), unless it runs
+  `--headless` or with a remote-debugging port, so an app opened from a
+  thread (Orca, VS Code, Docker) keeps its terminals and helpers;
+- terminal emulators and multiplexers wherever installed: alacritty, kitty,
+  WezTerm, Ghostty, iTerm2, Terminal, tmux, screen, zellij;
 - interactive shells: a login shell (`-zsh`) or one with no `-c` and no
   script.
 
 Below the process BB launched, the **agent chain** is spared: the launched
 process and everything down to its first work shell, passing through
 wrappers (`npx`, `npm exec`, `uvx`, `sh -c`) and a program relaunching its
-own executable (Gemini's `node` → `node`). Any other child of the agent (an
+own executable (Gemini's `node` → `node`). `sandbox-exec` is transparent:
+Codex's sandboxed command shell is work, Codex itself is not. Any other child of the agent (an
 MCP server, `rg`) is a helper and is spared with everything under it. Work
 starts at a shell the agent runs (`zsh -c`, `bash -lc`), and detached
 processes carrying the id (a dev server reparented to launchd) are work

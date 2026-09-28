@@ -29,15 +29,18 @@ that signals a process is **Kill processes** (popover, or
 `bb hotspot kill <threadId> --yes` typed by a person in a terminal). It
 targets only the thread's own work: what the agent's shells started and
 detached processes carrying the thread's id (dev servers, builds, test
-runners, headless browsers). BB, apps (and everything under an app a thread
-happened to open, such as its terminals), other users' processes, system
-binaries and interactive shells end a thread's claim. The agent's whole
+runners, headless browsers). BB, apps (any `.app` bundle, and everything under an app a
+thread happened to open, such as its terminals), terminal emulators and
+tmux, other users' processes, system binaries and interactive shells end a
+thread's claim. The agent's whole
 chain (wrappers, relaunches) and its MCP servers are spared. The server
 mints a two-minute, single-use plan id; apply accepts only that id,
 re-reads the process table and refuses any pid whose start time or command
 changed before sending SIGTERM, then SIGKILL after 5 seconds to verified
 survivors. Agents get no tool for killing or stopping turns, and the CLI
-refuses `--yes` from an agent's shell. Set `allowKill` to `false` to remove the action.
+refuses `--yes` without a terminal or from under a provider bridge. That
+guards against an agent applying a kill by accident, not against one set on
+signalling processes itself. Set `allowKill` to `false` to remove the action.
 
 `server.ts` is the sampler loop, RPC, tool and CLI; `lib/` holds the pieces
 with tests: `procs.ts` (process table and thread attribution), `thermal.ts`,
