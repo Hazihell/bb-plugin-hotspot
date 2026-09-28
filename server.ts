@@ -7,11 +7,20 @@
 // closes stored hot episodes and ranks their culprit threads. The sampler reads
 // the server's own machine: `ps`, `notifyutil` and `os`, never a remote host.
 // Monitoring is read-only; nothing here signals, renices or kills a process.
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { PluginCliError, cliCommand, defineCli, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { type Range, rpcContract } from "./lib/contract";
 import { type DetectorState, type Episode, initialState, step } from "./lib/episodes";
-import { bucketSamples } from "./lib/report";
+import {
+  bucketSamples,
+  clampText,
+  describeEpisode,
+  describeSample,
+  describeWindow,
+  formatWhen,
+  parseWhen,
+  summarizeWindow,
+} from "./lib/report";
 import { EPISODE_OPENED, type EpisodeOpenedSignal, SAMPLED } from "./lib/signals";
 import { createSampler } from "./lib/sample";
 import { DAY_MS, MIGRATIONS, createStore } from "./lib/store";
@@ -27,6 +36,11 @@ const RANGE_SPECS: Record<Range, { spanMs: number; buckets: number }> = {
   "7d": { spanMs: 7 * DAY_MS, buckets: 336 },
 };
 const TIMELINE_EPISODE_LIMIT = 200;
+/** Output ceilings for the agent tool and the CLI (characters). */
+const TOOL_MAX_CHARS = 8_000;
+const CLI_MAX_CHARS = 32_000;
+const WHEN_HELP =
+  "`90m`, `3h`, `2d`, `1w` back from now; `15:00` for the most recent 15:00 (server-local); or an ISO date/time";
 
 /** Resolves when `ms` elapses or `signal` aborts, whichever comes first. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -74,27 +88,35 @@ export default async function plugin(bb: BbPluginApi) {
   const store = createStore(db);
 
   // Thread titles change rarely and the same few threads recur every
-  // sample, so each id is looked up at most once per TTL.
-  const titles = new Map<string, { title: string | null; at: number }>();
-  async function resolveTitles(threadIds: string[]): Promise<Map<string, string>> {
+  // sample, so each id is looked up at most once per TTL. `exists: false`
+  // is only recorded for a definite not-found, never for a failed request.
+  const threadCache = new Map<string, { exists: boolean; title: string | null; at: number }>();
+  async function resolveThreads(threadIds: string[]): Promise<Map<string, string | null>> {
     const now = Date.now();
+    if (threadCache.size > 1_000) threadCache.clear();
     await Promise.all(
       threadIds.map(async (threadId) => {
-        const cached = titles.get(threadId);
+        const cached = threadCache.get(threadId);
         if (cached !== undefined && now - cached.at < TITLE_TTL_MS) return;
-        const thread = await bb.sdk.threads.get({ threadId }).catch(() => null);
-        titles.set(threadId, { title: thread?.title ?? thread?.titleFallback ?? null, at: now });
+        try {
+          const thread = await bb.sdk.threads.get({ threadId });
+          const title = thread.title ?? thread.titleFallback ?? null;
+          threadCache.set(threadId, { exists: true, title, at: now });
+        } catch (error) {
+          const notFound = /not.?found|404/i.test(String(error));
+          threadCache.set(threadId, { exists: !notFound, title: null, at: now });
+        }
       }),
     );
-    const resolved = new Map<string, string>();
+    const resolved = new Map<string, string | null>();
     for (const threadId of threadIds) {
-      const title = titles.get(threadId)?.title;
-      if (title) resolved.set(threadId, title);
+      const entry = threadCache.get(threadId);
+      if (entry?.exists !== false) resolved.set(threadId, entry?.title ?? null);
     }
     return resolved;
   }
 
-  const takeSample = createSampler(resolveTitles);
+  const takeSample = createSampler(resolveThreads);
 
   // The detector's streak survives reloads in KV; the episodes themselves
   // live in SQLite, and the open one is rewritten there after every sample.
@@ -187,6 +209,127 @@ export default async function plugin(bb: BbPluginApi) {
       }
     },
   });
+
+  /** Episodes overlapping [from, to] plus, optionally, what the window looked like. */
+  function historyText(options: {
+    from: number;
+    to: number;
+    limit: number;
+    culprits: number;
+    summary: boolean;
+  }): string {
+    const { from, to, limit, culprits, summary } = options;
+    const lines = [`Hotspot history ${formatWhen(from)} → ${formatWhen(to)} (server-local time)`];
+    if (summary) {
+      lines.push("", "Window:", ...describeWindow(summarizeWindow(store.samples(from, to), 5)));
+    }
+    const episodes = store.episodes(from, to, limit);
+    lines.push("", episodes.length === 0 ? "No hot episodes in this window." : `Hot episodes, newest first (max ${limit}):`);
+    for (const episode of episodes) lines.push(...describeEpisode(episode, culprits));
+    return lines.join("\n");
+  }
+
+  function resolveWindow(since: string, until: string | undefined, now: number) {
+    const from = parseWhen(since, now);
+    const to = until === undefined ? now : parseWhen(until, now);
+    if (from === null) return { error: `Cannot read time "${since}". Use ${WHEN_HELP}.` };
+    if (to === null) return { error: `Cannot read time "${until}". Use ${WHEN_HELP}.` };
+    if (from >= to) return { error: `"since" (${formatWhen(from)}) must be before "until" (${formatWhen(to)}).` };
+    return { from, to };
+  }
+
+  bb.agents.registerTool({
+    name: "hotspot_history",
+    description:
+      "Why was the Mac hot, and which BB thread caused it? Returns recorded hot episodes " +
+      "(thermal pressure above nominal or sustained high CPU) overlapping a time window, each " +
+      "with its culprit threads ranked by CPU, plus a summary of CPU, thermal level and the " +
+      "busiest threads across the whole window. Read-only; output is bounded.",
+    instructions:
+      "When the user asks why their Mac was hot, loud or slow at some time, call hotspot_history " +
+      "with a window around that time (e.g. since \"15:00\", until \"16:00\") before guessing.",
+    presentation: {
+      label: { pending: "Reading Hotspot history", completed: "Read Hotspot history" },
+    },
+    parameters: z.object({
+      since: z.string().max(40).default("24h").describe(`Window start: ${WHEN_HELP}. Default 24h.`),
+      until: z.string().max(40).optional().describe(`Window end, same forms as since. Default now.`),
+      limit: z.number().int().min(1).max(20).default(5).describe("Most episodes to list (1–20)."),
+    }),
+    async execute({ since, until, limit }) {
+      const window = resolveWindow(since, until, Date.now());
+      if ("error" in window) {
+        return { content: [{ type: "text", text: window.error ?? "" }], isError: true };
+      }
+      const text = historyText({ ...window, limit, culprits: 5, summary: true });
+      return clampText(text, TOOL_MAX_CHARS);
+    },
+  });
+
+  bb.cli.register(
+    defineCli({
+      name: "hotspot",
+      summary: "When the Mac ran hot and which BB thread caused it",
+      commands: {
+        status: cliCommand({
+          summary: "Latest sample: thermal level, CPU, load, busiest threads and processes",
+          options: { json: { type: "boolean", description: "Emit JSON" } },
+          async run(input) {
+            const latest = store.latest();
+            const open = detector.open;
+            if (input.options.json) {
+              const trimmed =
+                open === null
+                  ? null
+                  : { ...open, culprits: open.culprits.slice(0, 5), others: open.others.slice(0, 5) };
+              return { exitCode: 0, stdout: JSON.stringify({ latest, open: trimmed }) };
+            }
+            if (latest === null) {
+              return { exitCode: 0, stdout: "No samples yet. The first arrives within one interval of loading." };
+            }
+            const lines = describeSample(latest);
+            lines.push("", open === null ? "Not in a hot episode." : "Hot episode in progress:");
+            if (open !== null) lines.push(...describeEpisode(open, 5));
+            return { exitCode: 0, stdout: clampText(lines.join("\n"), CLI_MAX_CHARS) };
+          },
+        }),
+        episodes: cliCommand({
+          summary: "Hot episodes with their culprit threads, newest first",
+          options: {
+            since: {
+              type: "string",
+              default: "24h",
+              description: `Window start: ${WHEN_HELP}`,
+              aliases: ["from"],
+            },
+            until: { type: "string", description: "Window end, same forms as --since (default now)", aliases: ["to"] },
+            limit: { type: "integer", min: 1, max: 50, default: 10, description: "Most episodes to list (1–50)" },
+            json: { type: "boolean", description: "Emit JSON (top 5 culprits per episode)" },
+          },
+          async run(input) {
+            const { since, until, limit, json } = input.options;
+            const window = resolveWindow(since, until, Date.now());
+            if ("error" in window) {
+              throw new PluginCliError(window.error ?? "invalid window", {
+                code: "invalid_time",
+                hint: "Try `bb hotspot episodes --since 24h` or `--since 15:00 --until 16:00`.",
+              });
+            }
+            if (json) {
+              const episodes = store.episodes(window.from, window.to, limit).map((episode) => ({
+                ...episode,
+                culprits: episode.culprits.slice(0, 5),
+                others: episode.others.slice(0, 5),
+              }));
+              return { exitCode: 0, stdout: JSON.stringify({ ...window, episodes }) };
+            }
+            const text = historyText({ ...window, limit, culprits: 3, summary: false });
+            return { exitCode: 0, stdout: clampText(text, CLI_MAX_CHARS) };
+          },
+        }),
+      },
+    }),
+  );
 
   async function prune(): Promise<void> {
     const { retentionDays } = await settings.get();

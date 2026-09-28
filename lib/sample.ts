@@ -68,9 +68,14 @@ function clampPercent(value: number): number {
 
 const round = (value: number) => Math.round(value * 10) / 10;
 
-export type TitleResolver = (threadIds: string[]) => Promise<Map<string, string>>;
+/**
+ * Looks threads up in BB. The result holds every id BB knows, with its title
+ * or null; an id missing from it does not exist (a `thr_…` string in some
+ * process's argv that names no thread) and is dropped from the ranking.
+ */
+export type ThreadResolver = (threadIds: string[]) => Promise<Map<string, string | null>>;
 
-export function createSampler(resolveTitles: TitleResolver) {
+export function createSampler(resolveThreads: ThreadResolver) {
   let previousTicks: CpuTicks | null = null;
   const cores = Math.max(1, os.cpus().length);
 
@@ -83,12 +88,14 @@ export function createSampler(resolveTitles: TitleResolver) {
     previousTicks = ticks;
 
     const attribution = attributeThreads(rows);
-    const threads = groupByThread(rows, attribution)
+    // A few spare candidates so a dropped unknown id does not shorten the list.
+    const candidates = groupByThread(rows, attribution)
       .filter((entry) => entry.cpuPercent > 0)
-      .slice(0, TOP_THREADS);
-    const titles = await resolveTitles(threads.map((entry) => entry.threadId)).catch(
-      () => new Map<string, string>(),
+      .slice(0, TOP_THREADS + 3);
+    const known = await resolveThreads(candidates.map((entry) => entry.threadId)).catch(
+      () => new Map(candidates.map((entry) => [entry.threadId, null])),
     );
+    const threads = candidates.filter((entry) => known.has(entry.threadId)).slice(0, TOP_THREADS);
     return {
       at: now,
       thermal,
@@ -96,7 +103,7 @@ export function createSampler(resolveTitles: TitleResolver) {
       load: Math.round((os.loadavg()[0] / cores) * 100) / 100,
       threads: threads.map((entry) => ({
         threadId: entry.threadId,
-        title: titles.get(entry.threadId) ?? null,
+        title: known.get(entry.threadId) ?? null,
         cpu: round(entry.cpuPercent / cores),
         processes: entry.processCount,
       })),
