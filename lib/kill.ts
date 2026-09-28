@@ -27,8 +27,8 @@
  */
 import { attributeThreads, type ProcessRow, type ProcessSource, processName, splitEnvironment, threadIdFrom } from "./procs";
 
-/** A `ps` row with what identity and ownership checks need; the kill `ps` reads no memory. */
-export interface KillRow extends Omit<ProcessRow, "rssBytes"> {
+/** A `ps` row with what identity and ownership checks need; the kill `ps` reads no memory or CPU time. */
+export interface KillRow extends Omit<ProcessRow, "rssBytes" | "cpuMs" | "key"> {
   uid: number;
   /** `ps` lstart in the C locale, e.g. `Mon Sep 28 14:04:23 2026`. */
   startedAt: string;

@@ -14,7 +14,10 @@
  * path. A process with no id of its own inherits its nearest ancestor's, so
  * a compiler forked by an agent is billed to that agent's thread. Rows are
  * ranked by CPU, not memory. Off macOS, `ps` has no `-E`, so the
- * environment comes from `/proc/<pid>/environ` instead.
+ * environment comes from `/proc/<pid>/environ` instead. Each row also
+ * carries the process's cumulative CPU time and a key that survives pid
+ * reuse, so the sampler can measure CPU between two readings instead of
+ * trusting `ps`'s decaying average.
  */
 import { exec } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -28,6 +31,11 @@ export interface ProcessSource {
   exec(command: string): Promise<string>;
   /** The NUL-separated environment of `pid`, or null when unreadable. */
   readEnviron(pid: number): Promise<string | null>;
+  /**
+   * `/proc/<pid>/stat`, or null when unreadable. Off macOS it gives CPU time
+   * and start time; a source without it leaves both unknown.
+   */
+  readStat?(pid: number): Promise<string | null>;
 }
 
 export const systemProcessSource: ProcessSource = {
@@ -40,23 +48,41 @@ export const systemProcessSource: ProcessSource = {
     // Only readable for processes this user owns, which covers BB's own.
     return readFile(`/proc/${pid}/environ`, "utf8").catch(() => null);
   },
+  async readStat(pid) {
+    return readFile(`/proc/${pid}/stat`, "utf8").catch(() => null);
+  },
 };
 
-export const DARWIN_PS = "ps -axE -o pid=,ppid=,pcpu=,rss=,command=";
+/** The C locale keeps `lstart` in one shape: `Mon Sep 28 14:04:23 2026`. */
+export const DARWIN_PS = "LC_ALL=C ps -axE -o pid=,ppid=,pcpu=,rss=,time=,lstart=,command=";
 export const PORTABLE_PS = "ps -eo pid=,ppid=,pcpu=,rss=,args=";
+/** pid, ppid, pcpu, rss (KiB), cumulative CPU time, start time, then the command line. */
+const DARWIN_LINE =
+  /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d:.-]+)\s+([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/;
 /** pid, ppid, pcpu, rss (KiB), then the command line. */
 const PS_LINE = /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(.*)$/;
+/** Linux reports `/proc/<pid>/stat` times in clock ticks; USER_HZ is 100 on every mainstream kernel. */
+const CLOCK_TICKS_PER_SECOND = 100;
 
 export interface ProcessRow {
   pid: number;
   ppid: number;
   /**
-   * `ps` pcpu. On macOS this is a decaying average over roughly the last
-   * minute, not an instantaneous reading, and one busy core is 100.
+   * Percent of one core; one busy core is 100. As read, `ps` pcpu, which on
+   * macOS is a decaying average over roughly the last minute; the sampler
+   * replaces it with CPU time over its own interval where it can
+   * (lib/sample.ts, cpuSince).
    */
   cpuPercent: number;
   /** Resident set size in bytes. Shared pages count in every process that maps them. */
   rssBytes: number;
+  /** CPU time (user and system) used since the process started, in ms; null when unknown. */
+  cpuMs: number | null;
+  /**
+   * The pid and the process's start time, so a reused pid reads as a new
+   * process; null when the start time is unknown.
+   */
+  key: string | null;
   name: string;
   /** The thread named by this process itself (environment or argv). */
   threadId: string | null;
@@ -125,16 +151,41 @@ export function parseThreadId(command: string): string | null {
   return threadIdFrom(argv, env);
 }
 
-/** One line of `ps -axE -o pid=,ppid=,pcpu=,rss=,command=`. */
-export function parsePsLine(line: string): ProcessRow | null {
-  const match = PS_LINE.exec(line);
+/**
+ * `ps` cumulative CPU time in ms: `[[dd-]hh:]mm:ss[.cc]`. macOS prints
+ * minutes and centiseconds (`870:19.60`); procps prints whole seconds.
+ */
+export function parseCpuTime(text: string): number | null {
+  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/.exec(text);
   if (match === null) return null;
-  const command = match[5];
+  const [, days = "0", hours = "0", minutes, seconds] = match;
+  return Math.round(((Number(days) * 24 + Number(hours)) * 3600 + Number(minutes) * 60 + Number(seconds)) * 1000);
+}
+
+/** CPU time and start time from `/proc/<pid>/stat`, or null when it cannot be read. */
+export function parseProcStat(text: string | null): { cpuMs: number; started: string } | null {
+  if (text === null) return null;
+  // The command name (field 2) is in parentheses and may hold spaces; count from after it.
+  const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+  const utime = Number(fields[11]);
+  const stime = Number(fields[12]);
+  const started = fields[19];
+  if (!Number.isFinite(utime) || !Number.isFinite(stime) || started === undefined || started === "") return null;
+  return { cpuMs: ((utime + stime) * 1000) / CLOCK_TICKS_PER_SECOND, started };
+}
+
+/** One line of `ps -axE -o pid=,ppid=,pcpu=,rss=,time=,lstart=,command=`. */
+export function parsePsLine(line: string): ProcessRow | null {
+  const match = DARWIN_LINE.exec(line);
+  if (match === null) return null;
+  const command = match[7];
   return {
     pid: Number(match[1]),
     ppid: Number(match[2]),
     cpuPercent: Number(match[3]),
     rssBytes: Number(match[4]) * 1024,
+    cpuMs: parseCpuTime(match[5]),
+    key: `${match[1]}@${match[6].replace(/\s+/g, " ")}`,
     name: processName(command),
     threadId: parseThreadId(command),
   };
@@ -169,12 +220,16 @@ export async function readProcesses(
     lines.map(async (match) => {
       const pid = Number(match[1]);
       const argv = match[5];
-      const env = (await source.readEnviron(pid)) ?? "";
+      const [environ, stat] = await Promise.all([source.readEnviron(pid), source.readStat?.(pid) ?? null]);
+      const env = environ ?? "";
+      const times = parseProcStat(stat);
       return {
         pid,
         ppid: Number(match[2]),
         cpuPercent: Number(match[3]),
         rssBytes: Number(match[4]) * 1024,
+        cpuMs: times?.cpuMs ?? null,
+        key: times === null ? null : `${pid}@${times.started}`,
         name: processName(argv),
         threadId: threadIdFrom(argv, env),
       };
