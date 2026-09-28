@@ -26,6 +26,10 @@ export interface RunningChangedSignal {
 
 export type LiveSignal = SampleView;
 
+/** Why a window sent a heartbeat; the server names it when a lapsed lease restarts. */
+export const WATCH_REASONS = ["mount", "timer", "shown", "focus", "pageshow", "reconnect", "retry"] as const;
+export type WatchReason = (typeof WATCH_REASONS)[number];
+
 export interface EpisodeOpenedSignal {
   id: number;
   startAt: number;

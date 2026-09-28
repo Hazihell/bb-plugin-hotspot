@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
 import type { Status, rpcContract } from "../lib/contract";
-import { LIVE, type LiveSignal, SAMPLED } from "../lib/signals";
+import { LIVE, type LiveSignal, SAMPLED, type WatchReason } from "../lib/signals";
 
 export interface StatusState {
   /** The last status read; kept while a later read fails. */
@@ -55,56 +55,75 @@ const RETRY_MS = 1_000;
  * server's watch lease four times per lease, derived from the `leaseMs`
  * each reply carries; at once when the window shows, gains focus, is
  * restored from the back/forward cache or the realtime connection comes
- * back; and a second after a heartbeat fails. A hidden window stops
+ * back; and a second after a heartbeat fails. A heartbeat still unanswered
+ * after one beat is given up on and sent again; a late answer only
+ * reschedules. Each heartbeat says why it was sent. A hidden window stops
  * renewing and the lease lapses on its own.
  */
 export function useWatchLease(): void {
   const rpc = useRpc<typeof rpcContract>();
   const connection = useRealtimeConnectionState();
-  const renewRef = useRef<() => void>(() => undefined);
+  const renewRef = useRef<(reason: WatchReason) => void>(() => undefined);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let inFlight = false;
+    let beatMs = FIRST_BEAT_MS;
+    /** The heartbeat awaiting an answer: its number and when it was sent; null when none is. */
+    let pending: { id: number; sentAt: number } | null = null;
+    let sent = 0;
     let failing = false;
     let stopped = false;
     const visible = () => document.visibilityState === "visible";
-    const schedule = (ms: number) => {
+    const schedule = (ms: number, reason: WatchReason) => {
       if (timer !== null) clearTimeout(timer);
-      timer = stopped || !visible() ? null : setTimeout(renew, ms);
+      timer = stopped || !visible() ? null : setTimeout(() => renew(reason), ms);
     };
-    function renew() {
-      if (stopped || inFlight || !visible()) return;
-      inFlight = true;
-      rpc.call("watch").then(
+    function renew(reason: WatchReason) {
+      if (stopped || !visible()) return;
+      const age = pending === null ? Number.POSITIVE_INFINITY : performance.now() - pending.sentAt;
+      // One is on its way: come back when it has had a full beat to answer.
+      if (age < beatMs) return schedule(beatMs - age + 1, "timer");
+      const id = ++sent;
+      pending = { id, sentAt: performance.now() };
+      // Should this one never settle, the timer sends the next.
+      schedule(beatMs, "timer");
+      rpc.call("watch", { reason }).then(
         ({ leaseMs }) => {
-          inFlight = false;
+          beatMs = leaseMs / 4;
+          if (id !== sent) return schedule(beatMs, "timer");
+          pending = null;
           failing = false;
-          schedule(leaseMs / 4);
+          schedule(beatMs, "timer");
         },
         (error: unknown) => {
-          inFlight = false;
+          if (id !== sent) return;
+          pending = null;
           // Once per run of failures, so a reload or an outage logs one line.
           if (!failing) console.warn("Hotspot: live-readings heartbeat failed; retrying every second", error);
           failing = true;
-          schedule(RETRY_MS);
+          schedule(RETRY_MS, "retry");
         },
       );
     }
     renewRef.current = renew;
-    const onShow = () => (visible() ? renew() : schedule(0));
-    document.addEventListener("visibilitychange", onShow);
-    window.addEventListener("focus", onShow);
-    window.addEventListener("pageshow", onShow);
-    renew();
-    schedule(FIRST_BEAT_MS);
+    const onVisibility = () => {
+      console.debug(`Hotspot: window ${document.visibilityState}`);
+      if (visible()) renew("shown");
+      else schedule(0, "timer");
+    };
+    const onFocus = () => renew("focus");
+    const onPageShow = () => renew("pageshow");
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("pageshow", onPageShow);
+    renew("mount");
     return () => {
       stopped = true;
       if (timer !== null) clearTimeout(timer);
       renewRef.current = () => undefined;
-      document.removeEventListener("visibilitychange", onShow);
-      window.removeEventListener("focus", onShow);
-      window.removeEventListener("pageshow", onShow);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pageshow", onPageShow);
     };
   }, [rpc]);
 
@@ -112,7 +131,7 @@ export function useWatchLease(): void {
   // arrived; renew as soon as it is back.
   const previous = useRef(connection);
   useEffect(() => {
-    if (connection === "connected" && previous.current !== "connected") renewRef.current();
+    if (connection === "connected" && previous.current !== "connected") renewRef.current("reconnect");
     previous.current = connection;
   }, [connection]);
 }

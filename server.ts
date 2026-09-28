@@ -283,6 +283,8 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
   /** Live readings run until this time (monotonic); each `watch` call pushes it out. */
   let watchedUntil = Number.NEGATIVE_INFINITY;
   let lastHeartbeat = Number.NEGATIVE_INFINITY;
+  /** Why the heartbeat that started the current run of live readings was sent. */
+  let startReason = "unknown";
   const watched = () => monotonic() < watchedUntil;
   /** Ends the sampler's current sleep; a no-op while it is reading. */
   let wakeSampler: () => void = () => undefined;
@@ -478,11 +480,14 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
       bb.log.info(`stopped the running turn of ${threadId} from the footer popover`);
       return { ok: true as const };
     },
-    watch() {
+    watch(input) {
       const wasWatched = watched();
       lastHeartbeat = monotonic();
       watchedUntil = Math.max(watchedUntil, lastHeartbeat + watchLeaseMs);
-      if (!wasWatched) wakeSampler();
+      if (!wasWatched) {
+        startReason = input?.reason ?? "unknown";
+        wakeSampler();
+      }
       return { leaseMs: watchLeaseMs, liveIntervalMs };
     },
     async status() {
@@ -528,7 +533,7 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
         const { sampleIntervalSeconds } = await settings.get();
         const due = tick >= storeAt;
         const live = watched();
-        if (live && !wasLive) bb.log.info("live readings started");
+        if (live && !wasLive) bb.log.info(`live readings started by a heartbeat (${startReason})`);
         if (!live && wasLive) {
           const ago = ((tick - lastHeartbeat) / 1_000).toFixed(1);
           bb.log.info(`live readings stopped: the last heartbeat arrived ${ago} s ago`);

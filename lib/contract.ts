@@ -7,6 +7,7 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { episodeViewSchema, sampleViewSchema, timelinePointSchema } from "./schemas";
+import { WATCH_REASONS } from "./signals";
 
 export const RANGES = ["24h", "7d"] as const;
 /** The sparklines' window: one hour in 30 two-minute buckets. */
@@ -75,7 +76,8 @@ export const rpcContract = defineRpcContract({
    * called this within the lease, and stop when every lease lapses.
    */
   watch: {
-    input: z.null(),
+    // Null from a window still running a bundle from before reasons existed.
+    input: z.object({ reason: z.enum(WATCH_REASONS) }).strict().nullable(),
     output: z.object({ leaseMs: z.number(), liveIntervalMs: z.number() }),
   },
   killPlan: {

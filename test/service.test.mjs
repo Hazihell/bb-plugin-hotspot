@@ -104,9 +104,11 @@ test("live readings stop when the lease lapses and start again on the next heart
     harness.inspection.logEntries.some((entry) => /live readings stopped: the last heartbeat arrived 0\.\d s ago/.test(entry.message)),
   );
 
-  await harness.callRpc("watch", null);
+  await harness.callRpc("watch", { reason: "focus" });
   await tick(50);
   assert.ok(sampler.calls.length > stopped, "a heartbeat wakes the sleeping sampler");
+  assert.ok(harness.inspection.logEntries.some((entry) => entry.message === "live readings started by a heartbeat (focus)"));
+  await assert.rejects(harness.callRpc("watch", { reason: "because" }));
   service.controller.abort();
   await service.done;
 });
