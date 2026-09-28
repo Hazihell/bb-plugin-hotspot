@@ -42,6 +42,13 @@ const CLI_MAX_CHARS = 32_000;
 const WHEN_HELP =
   "`90m`, `3h`, `2d`, `1w` back from now; `15:00` for the most recent 15:00 (server-local); or an ISO date/time";
 
+/** True only for BB's definite "no such thread" answer (HTTP 404, thread_not_found). */
+function isNotFound(error: unknown): boolean {
+  const fields = (error ?? {}) as { status?: unknown; code?: unknown };
+  if (fields.status === 404 || fields.code === "thread_not_found") return true;
+  return /\b404\b|thread_not_found|thread not found/i.test(String(error));
+}
+
 /** Resolves when `ms` elapses or `signal` aborts, whichever comes first. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -88,12 +95,14 @@ export default async function plugin(bb: BbPluginApi) {
   const store = createStore(db);
 
   // Thread titles change rarely and the same few threads recur every
-  // sample, so each id is looked up at most once per TTL. `exists: false`
-  // is only recorded for a definite not-found, never for a failed request.
+  // sample, so each id is looked up at most once per TTL. Only answers are
+  // cached (found, or definitely not found); a failed request is retried
+  // on the next sample and meanwhile keeps the id without a title.
   const threadCache = new Map<string, { exists: boolean; title: string | null; at: number }>();
   async function resolveThreads(threadIds: string[]): Promise<Map<string, string | null>> {
     const now = Date.now();
     if (threadCache.size > 1_000) threadCache.clear();
+    const failed = new Set<string>();
     await Promise.all(
       threadIds.map(async (threadId) => {
         const cached = threadCache.get(threadId);
@@ -103,14 +112,14 @@ export default async function plugin(bb: BbPluginApi) {
           const title = thread.title ?? thread.titleFallback ?? null;
           threadCache.set(threadId, { exists: true, title, at: now });
         } catch (error) {
-          const notFound = /not.?found|404/i.test(String(error));
-          threadCache.set(threadId, { exists: !notFound, title: null, at: now });
+          if (isNotFound(error)) threadCache.set(threadId, { exists: false, title: null, at: now });
+          else failed.add(threadId);
         }
       }),
     );
     const resolved = new Map<string, string | null>();
     for (const threadId of threadIds) {
-      const entry = threadCache.get(threadId);
+      const entry = failed.has(threadId) ? undefined : threadCache.get(threadId);
       if (entry?.exists !== false) resolved.set(threadId, entry?.title ?? null);
     }
     return resolved;
