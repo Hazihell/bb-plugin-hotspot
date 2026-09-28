@@ -237,6 +237,7 @@ export function FooterIndicator() {
   const { status } = state;
   const [open, setOpen] = useState(false);
   const [button, setButton] = useState<HTMLButtonElement | null>(null);
+  const content = useRef<HTMLDivElement>(null);
   const box = useTextBox(button);
   if (slot === null) return null;
   const view = footerView({
@@ -275,10 +276,17 @@ export function FooterIndicator() {
         </button>
       </PopoverTrigger>
       <PopoverContent
+        ref={content}
         side="top"
         align="start"
         sideOffset={6}
         mobileTitle="Hotspot"
+        // Focus the popover itself, not its first button: without a culprit
+        // link that is a thread row, and focus there would freeze the list.
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          content.current?.focus({ preventScroll: true });
+        }}
         className="w-[26rem] max-w-[calc(100vw-1rem)] p-0"
       >
         {open ? (
@@ -360,7 +368,14 @@ function useListHold() {
       if (!(event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setFocus(false);
     },
   };
-  return { held: pointer || focus, handlers };
+  /** Lets go at once, for when the list is taken off screen: an unmounted list fires no leave or blur. */
+  const release = useCallback(() => {
+    if (leave.current !== null) clearTimeout(leave.current);
+    leave.current = null;
+    setPointer(false);
+    setFocus(false);
+  }, []);
+  return { held: pointer || focus, handlers, release };
 }
 
 /**
@@ -411,7 +426,13 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
     rpc
       .call("killPlan", { threadId })
       .then(
-        (next) => setPlan(next),
+        (next) => {
+          // The confirmation replaces the list: let it go, and fold the row
+          // away so it does not hold the list frozen on return.
+          hold.release();
+          setExpanded(null);
+          setPlan(next);
+        },
         (error: unknown) => toast.error("Could not plan the kill", { description: errorText(error) }),
       )
       .finally(() => setBusy(null));
@@ -442,7 +463,15 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
   }, [shownIds, refetch]);
 
   if (plan !== null) {
-    return <KillConfirm plan={plan} onDone={() => setPlan(null)} />;
+    return (
+      <KillConfirm
+        plan={plan}
+        onDone={() => {
+          hold.release();
+          setPlan(null);
+        }}
+      />
+    );
   }
 
   const threads = showIdle ? [...busyThreads, ...idleThreads] : busyThreads;
