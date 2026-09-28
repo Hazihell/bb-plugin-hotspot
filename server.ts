@@ -38,6 +38,8 @@ const TITLE_TTL_MS = 10 * 60_000;
 /** Consecutive hot samples that open an episode, and normal ones that close it. */
 const OPEN_AFTER = 3;
 const CLOSE_AFTER = 3;
+/** Missed intervals after which the next sample starts over. */
+const GAP_INTERVALS = 3;
 /** Where earlier builds kept the detector state, before it moved into SQLite. */
 const LEGACY_DETECTOR_KEY = "detector";
 /** Window and bucket count per timeline range: 5-minute and 30-minute buckets. */
@@ -160,7 +162,8 @@ export default async function plugin(bb: BbPluginApi, deps: PluginDeps = {}) {
       cpuThreshold,
       openAfter: OPEN_AFTER,
       closeAfter: CLOSE_AFTER,
-      maxGapMs: sampleIntervalSeconds * 1_000 * 3,
+      intervalMs: sampleIntervalSeconds * 1_000,
+      gapIntervals: GAP_INTERVALS,
     });
     const { closed, open, state } = store.commitStep({
       sample,

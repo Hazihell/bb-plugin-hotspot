@@ -16,12 +16,23 @@ export interface DetectorConfig {
   cpuThreshold: number;
   openAfter: number;
   closeAfter: number;
+  /** The sample interval in force for this sample. */
+  intervalMs: number;
   /**
-   * A gap between samples longer than this (the server slept or the plugin
-   * was off) closes an open episode at its last hot sample and resets the
-   * streak, so hours of silence never merge into one episode.
+   * A gap between samples longer than this many intervals (the server slept
+   * or the plugin was off) closes an open episode at its last hot sample
+   * and resets the streak, so hours of silence never merge into one episode.
    */
-  maxGapMs: number;
+  gapIntervals: number;
+}
+
+/**
+ * The longest silence that still counts as consecutive. It uses the larger
+ * of the interval stored with the last sample and the current one, so
+ * changing the interval setting in either direction never ends an episode.
+ */
+export function maxGapMs(state: DetectorState, config: DetectorConfig): number {
+  return config.gapIntervals * Math.max(state.lastIntervalMs ?? config.intervalMs, config.intervalMs);
 }
 
 export interface StepResult {
@@ -35,7 +46,7 @@ export interface StepResult {
 export const MAX_CULPRITS = 50;
 
 export function initialState(): DetectorState {
-  return { streak: null, open: null, normalStreak: 0, lastAt: null };
+  return { streak: null, open: null, normalStreak: 0, lastAt: null, lastIntervalMs: null };
 }
 
 /**
@@ -112,7 +123,7 @@ export function step(state: DetectorState, sample: Sample, config: DetectorConfi
   let updated: Episode | null = null;
   let closed: Episode | null = null;
 
-  if (state.lastAt !== null && sample.at - state.lastAt > config.maxGapMs) {
+  if (state.lastAt !== null && sample.at - state.lastAt > maxGapMs(state, config)) {
     if (open !== null) closed = { ...open, endAt: open.lastHotAt };
     open = null;
     streak = null;
@@ -146,7 +157,7 @@ export function step(state: DetectorState, sample: Sample, config: DetectorConfi
   }
 
   return {
-    state: { streak, open, normalStreak, lastAt: sample.at },
+    state: { streak, open, normalStreak, lastAt: sample.at, lastIntervalMs: config.intervalMs },
     opened,
     updated,
     closed,

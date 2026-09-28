@@ -72,6 +72,8 @@ export const detectorStateSchema = z.object({
   open: episodeSchema.nullable(),
   normalStreak: z.number().int().min(0),
   lastAt: z.number().nullable(),
+  /** The sample interval in force when `lastAt` was taken; absent in older state. */
+  lastIntervalMs: z.number().positive().nullable().default(null),
 });
 
 /* What the page, CLI and tool show: stored shapes with titles attached. */

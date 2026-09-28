@@ -5,7 +5,7 @@ import { initialState, isHot, step } from "../lib/episodes.ts";
 import { DAY_MS, MIGRATIONS, createStore } from "../lib/store.ts";
 
 const MINUTE = 60_000;
-const CONFIG = { cpuThreshold: 80, openAfter: 3, closeAfter: 3, maxGapMs: 3 * MINUTE };
+const CONFIG = { cpuThreshold: 80, openAfter: 3, closeAfter: 3, intervalMs: MINUTE, gapIntervals: 3 };
 
 function sample(minute, { cpu = 10, thermal = 0, threads = [], procs = [] } = {}) {
   return { at: minute * MINUTE, thermal, cpu, load: 0.1, threads, procs };
@@ -15,10 +15,10 @@ const cool = (minute) => sample(minute);
 const thread = (threadId, cpu) => ({ threadId, cpu, processes: 1 });
 
 /** Feed samples through the detector and collect what it announced. */
-function run(samples, state = initialState()) {
+function run(samples, state = initialState(), config = CONFIG) {
   const events = [];
   for (const next of samples) {
-    const result = step(state, next, CONFIG);
+    const result = step(state, next, typeof config === "function" ? config(next) : config);
     state = result.state;
     if (result.opened) events.push(["opened", next.at / MINUTE]);
     if (result.closed) events.push(["closed", next.at / MINUTE, result.closed]);
@@ -150,4 +150,31 @@ test("commitStep writes the sample, episode and state together or not at all", (
   assert.equal(store.samples(0, Number.MAX_SAFE_INTEGER).length, 1);
   assert.equal(store.episodes(0, Number.MAX_SAFE_INTEGER, 10).length, 1);
   assert.equal(store.detectorState().open.id, open.id);
+});
+
+test("the gap limit follows the interval stored with the last sample", () => {
+  const HOUR = 60 * MINUTE;
+  // Hourly samples open an episode; then the interval drops to 15 s. The
+  // next sample, an hour after the last, must not close the episode.
+  const hourly = { ...CONFIG, intervalMs: HOUR };
+  const fast = { ...CONFIG, intervalMs: 15_000 };
+  const hotAt = (minutes) => ({ ...hot(0), at: minutes * MINUTE });
+  const opened = run([hotAt(0), hotAt(60), hotAt(120)], initialState(), hourly).state;
+  assert.equal(opened.lastIntervalMs, HOUR);
+  const after = step(opened, hotAt(180), fast);
+  assert.equal(after.closed, null);
+  assert.equal(after.state.open.samples, 4);
+
+  // Raising 15 s to an hour does not close it either.
+  const quick = run([hot(0), hot(0.25), hot(0.5)], initialState(), fast).state;
+  assert.equal(step(quick, hot(60.5), hourly).closed, null);
+
+  // A real silence past three of the larger interval still does.
+  assert.notEqual(step(opened, hotAt(120 + 181), fast).closed, null);
+});
+
+test("state from before lastIntervalMs existed still parses", async () => {
+  const { restoreState } = await import("../lib/episodes.ts");
+  const state = restoreState({ streak: null, open: null, normalStreak: 0, lastAt: 5 });
+  assert.deepEqual(state, { streak: null, open: null, normalStreak: 0, lastAt: 5, lastIntervalMs: null });
 });
