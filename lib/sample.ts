@@ -116,3 +116,10 @@ export function createSampler(options: SamplerOptions = {}) {
     };
   };
 }
+
+/** How long a (re)started sampler waits so samples stay one interval apart. */
+export function startupDelay(lastAt: number | null, now: number, intervalMs: number): number {
+  if (lastAt === null) return 0;
+  const elapsed = now - lastAt;
+  return elapsed >= 0 && elapsed < intervalMs ? intervalMs - elapsed : 0;
+}

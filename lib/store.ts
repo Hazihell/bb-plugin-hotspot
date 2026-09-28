@@ -131,6 +131,7 @@ export function createStore(db: Db) {
   const selectReadings = db.prepare(
     `SELECT at, cpu, thermal FROM samples WHERE at >= ? AND at <= ? ORDER BY at`,
   );
+  const selectLatestAt = db.prepare(`SELECT MAX(at) AS at FROM samples`);
   const selectLatest = db.prepare(`SELECT * FROM samples ORDER BY at DESC LIMIT 10`);
   const deleteSamples = db.prepare(`DELETE FROM samples WHERE at < ?`);
   const insertEpisode = db.prepare(
@@ -219,6 +220,11 @@ export function createStore(db: Db) {
       return (selectReadings.all(from, to) as unknown[])
         .map((row) => parseRow(readingSchema, () => row))
         .filter(present);
+    },
+    /** Time of the newest stored sample, parsed or not. */
+    latestAt(): number | null {
+      const row = selectLatestAt.get() as { at: number | null } | undefined;
+      return typeof row?.at === "number" ? row.at : null;
     },
     /** The newest sample that parses. */
     latest(): Sample | null {

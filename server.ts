@@ -22,8 +22,8 @@ import {
   summarizeWindow,
 } from "./lib/report";
 import { EPISODE_OPENED, type EpisodeOpenedSignal, SAMPLED } from "./lib/signals";
-import { TOP_THREADS, createSampler } from "./lib/sample";
-import type { EpisodeView, SampleView } from "./lib/schemas";
+import { TOP_THREADS, createSampler, startupDelay } from "./lib/sample";
+import type { EpisodeView, Sample, SampleView } from "./lib/schemas";
 import {
   createThreadDirectory,
   idsToResolve,
@@ -68,7 +68,12 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-export default async function plugin(bb: BbPluginApi) {
+/** Test seams; BB's host calls the factory with `bb` alone. */
+export interface PluginDeps {
+  takeSample?: (at: number) => Promise<Sample>;
+}
+
+export default async function plugin(bb: BbPluginApi, deps: PluginDeps = {}) {
   const settings = bb.settings.define({
     sampleIntervalSeconds: {
       type: "number",
@@ -127,7 +132,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   let processErrorLogged = false;
-  const takeSample = createSampler({
+  const takeSample = deps.takeSample ?? createSampler({
     // Logged once per load: a missing `ps` fails every sample the same way.
     onProcessError(error) {
       if (processErrorLogged) return;
@@ -146,9 +151,11 @@ export default async function plugin(bb: BbPluginApi) {
     await bb.storage.kv.delete(LEGACY_DETECTOR_KEY);
   }
 
-  async function record(at: number): Promise<void> {
+  async function record(at: number, signal: AbortSignal): Promise<void> {
     const { sampleIntervalSeconds, cpuThreshold } = await settings.get();
     const sample = await takeSample(at);
+    // Unloaded while `ps` ran: this generation must not write any more.
+    if (signal.aborted) return;
     const result = step(detector, sample, {
       cpuThreshold,
       openAfter: OPEN_AFTER,
@@ -221,11 +228,15 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.background.service("sampler", {
     async start(signal) {
+      // A reload restarts the service; sampling again at once would count
+      // one extra sample into the streak. Wait out the rest of the interval.
+      const { sampleIntervalSeconds: seconds } = await settings.get();
+      await sleep(startupDelay(store.latestAt(), Date.now(), seconds * 1_000), signal);
       while (!signal.aborted) {
         const started = Date.now();
         const { sampleIntervalSeconds } = await settings.get();
         try {
-          await record(started);
+          await record(started, signal);
         } catch (error) {
           bb.log.warn(`sample failed: ${error instanceof Error ? error.message : String(error)}`);
         }
