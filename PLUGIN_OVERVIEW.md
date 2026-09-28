@@ -1,21 +1,19 @@
-Keep a todo list beside the work it belongs to, in the sidebar and in
-your agent threads.
+Find out when your Mac ran hot and which BB thread caused it, without
+watching Activity Monitor.
 
 ## What you get
 
-- An **Example todos** page in the left sidebar that adds, completes, and
-  removes todos.
-- A `bb hotspot` command that does the same from a terminal.
-- Live updates, so a change made in one place reaches every open page at once.
+- A **Hotspot** page with a 24-hour and 7-day timeline of CPU and macOS
+  thermal pressure, with hot episodes highlighted.
+- For each episode, the BB threads that used the most CPU during it, linked
+  so you can jump straight to them.
+- A toast when your Mac starts running hot, naming the thread responsible.
+- `bb hotspot status` and `bb hotspot episodes` in a terminal, and a
+  `hotspot_history` tool so you can ask an agent "why was my Mac hot at 3pm?".
 
 ## How it works
 
-The todos live in this plugin's own storage on the BB server, one list per
-installation. Nothing leaves the machine, and the plugin needs no account, API
-key, or external service.
-
-## For agents
-
-The bundled skill tells an agent to read the list with `bb hotspot list`, add
-one todo at a time with `bb hotspot add`, and close finished work with
-`bb hotspot done`.
+Hotspot samples once a minute using `ps`, `notifyutil` and the kernel's CPU
+counters, and keeps seven days of history in its own database on the BB
+server. It only reads: it never slows, stops or changes a process, and it
+needs no account, root access or network service.
