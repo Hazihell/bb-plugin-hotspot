@@ -64,7 +64,8 @@ test("parses pid, uid, start time, argv and the thread from a ps -E line", () =>
     startedAt: START,
     argv: "node next dev",
     name: "node next dev",
-    label: "node · next dev",
+    // `next` is not a file, so nothing after node is named.
+    label: "node",
     threadId: THREAD,
   });
   assert.equal(parseKillLine("garbage"), null);

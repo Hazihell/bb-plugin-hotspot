@@ -75,7 +75,7 @@ test("runners name only what comes before the first flag", () => {
   assert.equal(friendlyName("npm --otp 123456 publish"), "npm");
   assert.equal(friendlyName("yarn --cwd hunter2 dev"), "yarn");
   assert.equal(friendlyName("pnpm --filter web dev"), "pnpm");
-  assert.equal(friendlyName("pnpm run --silent hunter2"), "pnpm");
+  assert.equal(friendlyName("pnpm run --silent hunter2"), "pnpm · run");
 });
 
 test("interpreters give the bare name after any flag whose arity is unknown", () => {
@@ -100,10 +100,62 @@ test("only argv[0] itself may be an app bundle with spaces, cut at its executabl
 });
 
 test("a kill plan's command shows flag names only, never values or arguments", () => {
-  assert.equal(displayCommand("node /repo/node_modules/vite/bin/vite.js --port 5173 --token abc"), "node · vite … --port … --token …");
-  assert.equal(displayCommand("mysql -phunter2 --password=hunter2 app"), "mysql … --password=… …");
+  assert.equal(displayCommand("node --inspect /repo/node_modules/vite/bin/vite.js --port 5173 --token abc"), "node · vite --inspect …");
+  assert.equal(displayCommand("mysql -phunter2 --password=hunter2 app"), "mysql …");
+  assert.equal(displayCommand("mysql --password=hunter2 -u root app"), "mysql --password=… -u …");
   assert.equal(displayCommand("npm --otp 123456 publish"), "npm --otp …");
+  assert.equal(displayCommand("git commit -m --hunter2"), "git commit …", "flags stop at the first other argument");
+  assert.equal(displayCommand("node --eval=main hunter2"), "node --eval=… …");
   for (const argv of ["curl -H Authorization: Bearer hunter2 https://u:hunter2@x", "mytool hunter2", "yarn --cwd hunter2 dev"]) {
     assert.doesNotMatch(displayCommand(argv), /hunter2/);
   }
+});
+
+test("second review: inline code, per-interpreter flags, and words shown only from lists", () => {
+  // Inline code, also as --eval=…: nothing after it is a file.
+  assert.equal(friendlyName("node --eval=main hunter2"), "node");
+  assert.equal(friendlyName("node --print=1 hunter2"), "node");
+  // php -r is code; ruby -C is not node's -C.
+  assert.equal(friendlyName("php -r echo PASSWORD"), "php");
+  assert.equal(friendlyName("ruby -C hunter2 x.rb"), "ruby");
+  // A first word is shown only when a list allows it.
+  assert.equal(friendlyName("node hunter2"), "node");
+  assert.equal(friendlyName("npm hunter2"), "npm");
+  assert.equal(friendlyName("npm run hunter2"), "npm · run");
+  assert.equal(friendlyName("npm run db:hunter2"), "npm · run");
+  assert.equal(friendlyName("make hunter2"), "make");
+  assert.equal(friendlyName("python3 -m hunter2"), "python3");
+  assert.equal(friendlyName("npx hunter2"), "npx");
+  assert.equal(friendlyName("pnpm dlx hunter2"), "pnpm · dlx");
+  assert.equal(friendlyName("git commit -m --hunter2"), "git commit");
+});
+
+test("common real commands still read well", () => {
+  const cases = {
+    "node /repo/node_modules/.bin/vite": "node · vite",
+    "node /repo/node_modules/vite/bin/vite.js --port 5173": "node · vite",
+    "node /repo/node_modules/next/dist/bin/next dev": "node · next dev",
+    "node /repo/node_modules/typescript/bin/tsc --watch": "node · tsc --watch",
+    "node /repo/node_modules/vitest/vitest.mjs": "node · vitest",
+    "node --conditions node --require /repo/setup.cjs /repo/node_modules/vitest/dist/workers/forks.js": "vitest · worker",
+    "node server.js": "node · server",
+    "pnpm test": "pnpm · test",
+    "pnpm run dev": "pnpm · dev",
+    "npm run dev:web": "npm · dev:web",
+    "npm run db:migrate": "npm · db:migrate",
+    "yarn dev": "yarn · dev",
+    "bun run dev": "bun · dev",
+    "bun /repo/app.ts": "bun · app",
+    "npx vite": "npx · vite",
+    "npx @playwright/mcp": "npx · @playwright/mcp",
+    "pnpm dlx shadcn": "pnpm · shadcn",
+    "python3 -m pytest -x": "python3 · pytest",
+    "python3 -m http.server 8000": "python3 · http.server",
+    "/usr/bin/python3 -u /repo/manage.py runserver": "python3 · manage",
+    "make build": "make build",
+    "cargo build": "cargo · build",
+    "tsc --watch": "tsc --watch",
+    "/opt/homebrew/bin/codex app-server": "codex app-server",
+  };
+  for (const [argv, name] of Object.entries(cases)) assert.equal(friendlyName(argv), name, argv);
 });

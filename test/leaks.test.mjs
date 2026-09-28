@@ -26,6 +26,15 @@ const LEAKS = [
   `mytool ${SECRET} /Applications/X.app/Contents/MacOS/X`,
   `/Applications/Foo.app/Contents/MacOS/Foo ${SECRET}`,
   `mysql -p${SECRET} app`,
+  // Second review: words shown only from lists, inline code, per-interpreter flags.
+  `node ${SECRET}`,
+  `npm ${SECRET}`,
+  `npm run ${SECRET}`,
+  `make ${SECRET}`,
+  `python3 -m ${SECRET}`,
+  `node --eval=main ${SECRET}`,
+  `php -r echo ${SECRET}`,
+  `git commit -m --${SECRET}`,
 ];
 
 /** A Mac whose thread runs the first half of LEAKS and whose other apps run the rest. */

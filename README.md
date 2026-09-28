@@ -48,13 +48,17 @@ processes (name, CPU, memory, in the list's columns), the process count,
 Stop turn and Kill processes…. The process list is display only; its rows
 are fixed when you unfold and only their numbers update. Every process name Hotspot shows, stores
 or returns (here, "Also busy outside BB", hot spells, kill plans, the CLI and
-the agent tool) is built by allowlist in `lib/proc-name.ts`: the executable,
-the script an interpreter runs when every flag before it has a known arity,
-the script a package runner names before any flag, and a known verb such as
-`dev` or `--watch`. Anything unsure is the bare executable, so
-`node …/vite.js` reads `node · vite` and `npm --otp 123456 publish` reads
-`npm`. A kill confirmation's command shows flags by name and every value as
-`…`; the kill itself still checks the real command line. Names stored
+the agent tool) is built by allowlist in `lib/proc-name.ts`: the executable;
+the file an interpreter runs (by basename or package) when every flag before
+it is on that interpreter's list, or a `python -m` module from a known list;
+a package runner's subcommand from a fixed list, and after `run` a script
+made of common words (`dev`, `test`, `db:migrate`); a known package after
+`npx` or `dlx`; and a known verb such as `dev` or `--watch`. Anything unsure
+is the bare executable, so `node …/vite.js` reads `node · vite`,
+`npm run deploy-prod` reads `npm · run` and `npm --otp 123456 publish` reads
+`npm`. A kill confirmation's command shows the flags before the first other
+argument by name, and every value as `…`; the kill itself still checks the
+real command line. Names stored
 before this rule were cleared when it arrived. Kill
 processes… kills its work processes after a confirmation
 that names what gets SIGTERM and lists what is spared. Threads under 1% CPU
