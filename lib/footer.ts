@@ -23,6 +23,10 @@ export interface FooterView {
   tone: FooterTone;
   /** The inline text, e.g. `13%` or `Heavy · 83% · Home page C…`. */
   text: string;
+  /** The same text in parts, so a narrow footer can cut the title and keep the numbers. */
+  level: string | null;
+  cpu: string;
+  title: string | null;
   /** The full line for the native hover tooltip. */
   tooltip: string;
 }
@@ -42,18 +46,17 @@ const threadName = (thread: { threadId: string; title: string | null }) => threa
 export function footerView(input: FooterInput): FooterView {
   const { latest } = input;
   if (latest === null) {
-    return { tone: "idle", text: "—", tooltip: "Hotspot: waiting for the first sample" };
+    return { tone: "idle", text: "—", level: null, cpu: "—", title: null, tooltip: "Hotspot: waiting for the first sample" };
   }
   const overCpu = latest.cpu >= input.cpuThreshold;
   const thermal = latest.thermal;
   const tone: FooterTone =
     thermal === null ? (overCpu ? "hot" : "calm") : thermal >= 2 ? "hot" : thermal === 1 ? "warm" : "calm";
 
-  const parts: string[] = [];
-  if (thermal !== null && thermal >= 1) parts.push(capitalize(thermalLabel(thermal)));
-  parts.push(pct(latest.cpu));
+  const level = thermal !== null && thermal >= 1 ? capitalize(thermalLabel(thermal)) : null;
+  const cpu = pct(latest.cpu);
   const top = latest.threads[0];
-  if ((input.hot || overCpu || (thermal ?? 0) >= 1) && top !== undefined) parts.push(shortTitle(threadName(top)));
+  const title = (input.hot || overCpu || (thermal ?? 0) >= 1) && top !== undefined ? shortTitle(threadName(top)) : null;
 
   const summary = [
     `Thermal ${thermalLabel(thermal)}`,
@@ -66,5 +69,6 @@ export function footerView(input: FooterInput): FooterView {
     threads.length === 0 ? "No BB thread is using CPU" : `Top threads: ${threads.join(", ")}`,
   ].join("\n");
 
-  return { tone, text: parts.join(" · "), tooltip };
+  const text = [level, cpu, title].filter((part) => part !== null).join(" · ");
+  return { tone, text, level, cpu, title, tooltip };
 }

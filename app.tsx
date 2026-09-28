@@ -1,14 +1,18 @@
 // bb-plugin-hotspot — frontend entry.
 //
-// Three surfaces, all reading the server over RPC and refreshing on its
+// Four surfaces, all reading the server over RPC and refreshing on its
 // realtime signals: the Hotspot page (timeline + episodes + culprits), a
-// one-word badge on its sidebar row while the Mac is hot, and an app-wide
-// overlay that turns the server's "episode opened" signal into a toast.
+// one-word badge on its sidebar row while the Mac is hot, the always-visible
+// indicator and popover in the sidebar footer (components/footer-indicator),
+// and an app-wide overlay that turns the server's "episode opened" signal into
+// a toast.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { definePluginApp, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { Episode, Range, Status, Timeline, rpcContract } from "./lib/contract";
+import { FooterIndicator } from "@/components/footer-indicator";
+import { useStatus } from "@/hooks/use-status";
 import { thermalLabel } from "./lib/labels";
 import { EPISODE_OPENED, type EpisodeOpenedSignal, SAMPLED } from "./lib/signals";
 import { Button } from "@/components/ui/button";
@@ -52,17 +56,6 @@ function threadLabel(culprit: { threadId: string; title: string | null }): strin
 /* ------------------------------------------------------------------ */
 /* Data                                                                */
 /* ------------------------------------------------------------------ */
-
-function useStatus() {
-  const rpc = useRpc<typeof rpcContract>();
-  const [status, setStatus] = useState<Status | null>(null);
-  const refetch = useCallback(() => {
-    rpc.call("status").then(setStatus, () => undefined);
-  }, [rpc]);
-  useEffect(refetch, [refetch]);
-  useRealtime(SAMPLED, refetch);
-  return status;
-}
 
 function useTimeline(range: Range) {
   const rpc = useRpc<typeof rpcContract>();
@@ -536,4 +529,5 @@ export default definePluginApp((app) => {
     experimental_sidebarAccessory: SidebarBadge,
   });
   app.slots.experimental_appOverlay({ id: "episode-toasts", component: HotspotToaster });
+  app.slots.experimental_appOverlay({ id: "footer-indicator", component: FooterIndicator });
 });
