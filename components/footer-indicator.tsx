@@ -7,7 +7,7 @@
 // sidebar, and portals React into it. The <li> carries this plugin's scope
 // attributes so its Tailwind classes apply. The server decides every kill;
 // this file only shows a plan and returns the plan id it was given.
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type FocusEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
@@ -24,8 +24,9 @@ import {
 } from "../lib/footer";
 import { bytesText, thermalLabel } from "../lib/labels";
 import { usePortalScopeProps } from "../lib/portal-scope";
-import { cpuText, dayClockText, durationText, pct, splitIdle, threadMeta } from "../lib/present";
+import { cpuText, dayClockText, durationText, pct, threadMeta } from "../lib/present";
 import { RUNNING_CHANGED, SAMPLED } from "../lib/signals";
+import { emptyList, listRows, nextList } from "../lib/thread-list";
 import { cn } from "../lib/utils";
 import { type StatusState, useStatus } from "../hooks/use-status";
 import { ErrorNote, FlameIcon, SkeletonLine, VerdictBlock, thermalSwatch } from "./heat";
@@ -307,6 +308,84 @@ function useOverview() {
   return { overview, refetch };
 }
 
+/**
+ * The thread list as drawn: the reading's threads held steady by the list
+ * rules, advanced once per reading. `frozen` is read when a reading
+ * arrives; letting go takes effect at the next one.
+ */
+function useSteadyThreads(latest: Status["latest"], frozen: boolean) {
+  const previous = useRef(emptyList<ThreadEntry>());
+  const frozenNow = useRef(frozen);
+  frozenNow.current = frozen;
+  const list = useMemo(
+    () => nextList(previous.current, latest?.threads ?? [], performance.now(), frozenNow.current),
+    [latest],
+  );
+  useEffect(() => {
+    previous.current = list;
+  }, [list]);
+  return listRows(list);
+}
+
+/** How long the list stays frozen after the pointer leaves it, so a pointer grazing its edge does not let it jump. */
+const LEAVE_GRACE_MS = 800;
+
+/**
+ * Whether the pointer, or keyboard focus, is in the list. Mouse clicks focus
+ * the popover's first button on open; only focus the user can see (keyboard
+ * focus) counts.
+ */
+function useListHold() {
+  const [pointer, setPointer] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const leave = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (leave.current !== null) clearTimeout(leave.current);
+  }, []);
+  const handlers = {
+    onPointerEnter: () => {
+      if (leave.current !== null) clearTimeout(leave.current);
+      leave.current = null;
+      setPointer(true);
+    },
+    onPointerLeave: () => {
+      if (leave.current !== null) clearTimeout(leave.current);
+      leave.current = setTimeout(() => {
+        leave.current = null;
+        setPointer(false);
+      }, LEAVE_GRACE_MS);
+    },
+    onFocus: (event: FocusEvent) => setFocus(event.target instanceof HTMLElement && event.target.matches(":focus-visible")),
+    onBlur: (event: FocusEvent) => {
+      if (!(event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setFocus(false);
+    },
+  };
+  return { held: pointer || focus, handlers };
+}
+
+/**
+ * Keeps an element from shrinking while it is mounted: its min-height
+ * follows the tallest it has been. A new `reset` lets it shrink once, for a
+ * change the user asked for.
+ */
+function useNoShrink(reset: unknown) {
+  const [element, setElement] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (element === null) return;
+    element.style.minHeight = "";
+    let tallest = 0;
+    const observer = new ResizeObserver(() => {
+      const height = element.offsetHeight;
+      if (height <= tallest) return;
+      tallest = height;
+      element.style.minHeight = `${height}px`;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [element, reset]);
+  return setElement;
+}
+
 function HotspotPopover({ state, close }: { state: StatusState; close: () => void }) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
@@ -317,6 +396,15 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
   const [showIdle, setShowIdle] = useState(false);
   const { status } = state;
   const latest = status?.latest ?? null;
+  // An unfolded row, or the pointer or keyboard focus in the list, freezes
+  // it: numbers update in place and no row moves, joins or leaves, so the
+  // row under the pointer and its Stop turn and Kill stay that thread's.
+  const hold = useListHold();
+  const { shown: busyThreads, folded: idleThreads } = useSteadyThreads(latest, hold.held || expanded !== null);
+  // Hiding the idle threads may shrink the list; folding a row's actions
+  // away leaves its room, so the rows above do not move after the click.
+  const [idleHidden, setIdleHidden] = useState(0);
+  const listRef = useNoShrink(idleHidden);
 
   const planKill = (threadId: string) => {
     setBusy(`kill:${threadId}`);
@@ -357,7 +445,6 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
     return <KillConfirm plan={plan} onDone={() => setPlan(null)} />;
   }
 
-  const { busy: busyThreads, idle: idleThreads } = splitIdle(latest?.threads ?? []);
   const threads = showIdle ? [...busyThreads, ...idleThreads] : busyThreads;
   const cpuThreshold = status?.cpuThreshold ?? 80;
   const others = latest?.procs.filter((proc) => proc.cpu >= 1).slice(0, 3) ?? [];
@@ -380,7 +467,7 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
       </div>
 
       {latest === null ? null : (
-        <section className="flex min-h-0 flex-1 flex-col border-t border-border pt-3 pb-1.5">
+        <section {...hold.handlers} className="flex min-h-0 flex-1 flex-col border-t border-border pt-3 pb-1.5">
           <div className="flex shrink-0 items-baseline gap-3 px-4 text-xs font-medium text-muted-foreground">
             <h3 className="min-w-0 flex-1">Busiest threads</h3>
             {threads.length === 0 ? null : (
@@ -392,51 +479,70 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
             )}
           </div>
           <div className="min-h-0 overflow-y-auto px-4 pt-1">
-            {threadCount === 0 ? (
-              <Empty>No BB thread is using the CPU.</Empty>
-            ) : (
-              <ul>
-                {threads.map((thread) => (
-                  <ThreadRow
-                    key={thread.threadId}
-                    thread={thread}
-                    running={overview === null ? null : overview.running[thread.threadId] === true}
-                    hot={thread.cpu >= cpuThreshold}
-                    expanded={expanded === thread.threadId}
-                    onToggle={() => setExpanded((current) => (current === thread.threadId ? null : thread.threadId))}
-                    onOpen={() => {
-                      close();
-                      navigate.toThread(thread.threadId);
-                    }}
-                    busy={busy}
-                    allowKill={overview?.allowKill === true}
-                    onStop={stopTurn}
-                    onKill={planKill}
-                  />
-                ))}
-              </ul>
-            )}
-            {idleThreads.length === 0 ? null : (
-              <button
-                type="button"
-                aria-expanded={showIdle}
-                onClick={() => setShowIdle((value) => !value)}
-                className={cn(
-                  "-mx-2 flex h-8 w-[calc(100%+1rem)] items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted-foreground outline-none hover:bg-state-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring",
-                  TOUCH,
-                )}
-              >
-                <Icon name="ChevronRight" className={cn("size-3.5 transition-transform", showIdle && "rotate-90")} />
-                {showIdle
-                  ? `Hide ${idleThreads.length === 1 ? "the idle thread" : "idle threads"}`
-                  : `${idleThreads.length} idle thread${idleThreads.length === 1 ? "" : "s"}`}
-              </button>
-            )}
-            {others.length === 0 ? null : (
-              <p className="truncate py-1 text-xs text-muted-foreground">
-                Also busy outside BB: {others.map((proc) => `${proc.name} ${pct(proc.cpu)}`).join(" · ")}
-              </p>
-            )}
+            {/*
+              The popover hangs from the footer, so any change in its height
+              moves everything above the change. The list keeps room for
+              three lines and the outside-BB line, and never shrinks while
+              open, except when the user hides the idle threads.
+            */}
+            <div ref={listRef} className={LIST_FLOOR}>
+              {threadCount === 0 ? (
+                <Empty>No BB thread is using the CPU.</Empty>
+              ) : (
+                <ul>
+                  {threads.map(({ thread, present }) => (
+                    <ThreadRow
+                      key={thread.threadId}
+                      thread={thread}
+                      present={present}
+                      running={overview === null ? null : overview.running[thread.threadId] === true}
+                      hot={present && thread.cpu >= cpuThreshold}
+                      expanded={expanded === thread.threadId}
+                      onToggle={() => setExpanded((current) => (current === thread.threadId ? null : thread.threadId))}
+                      onOpen={() => {
+                        close();
+                        navigate.toThread(thread.threadId);
+                      }}
+                      busy={busy}
+                      allowKill={overview?.allowKill === true}
+                      onStop={stopTurn}
+                      onKill={planKill}
+                    />
+                  ))}
+                </ul>
+              )}
+              {idleThreads.length === 0 ? null : (
+                <button
+                  type="button"
+                  aria-expanded={showIdle}
+                  onClick={() => {
+                    // An unfolded idle row folds away with the others.
+                    if (showIdle && idleThreads.some((row) => row.thread.threadId === expanded)) setExpanded(null);
+                    if (showIdle) setIdleHidden((count) => count + 1);
+                    setShowIdle(!showIdle);
+                  }}
+                  className={cn(
+                    "-mx-2 flex h-8 w-[calc(100%+1rem)] items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted-foreground outline-none hover:bg-state-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring",
+                    TOUCH,
+                  )}
+                >
+                  <Icon name="ChevronRight" className={cn("size-3.5 transition-transform", showIdle && "rotate-90")} />
+                  {showIdle
+                    ? `Hide ${idleThreads.length === 1 ? "the idle thread" : "idle threads"}`
+                    : `${idleThreads.length} idle thread${idleThreads.length === 1 ? "" : "s"}`}
+                </button>
+              )}
+              {/* Its line is kept when nothing outside BB is busy, so the list does not grow when something is. */}
+              {others.length === 0 ? (
+                <p aria-hidden="true" className="py-1 text-xs">
+                  &nbsp;
+                </p>
+              ) : (
+                <p className="truncate py-1 text-xs tabular-nums text-muted-foreground">
+                  Also busy outside BB: {others.map((proc) => `${proc.name} ${pct(proc.cpu)}`).join(" · ")}
+                </p>
+              )}
+            </div>
           </div>
         </section>
       )}
@@ -458,14 +564,15 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
         }
       >
         {overview === null ? (
-          <div className="space-y-2 py-2">
+          <div className={cn("space-y-2 py-2", EPISODES_FLOOR)}>
             <SkeletonLine className="w-3/4" />
             <SkeletonLine className="w-2/3" />
           </div>
         ) : overview.episodes.length === 0 ? (
           <Empty>None recorded. Hotspot will tell you when your Mac starts running hot.</Empty>
         ) : (
-          <ul className="-mx-2 pt-1">
+          // Room for three spells, so a new one does not grow the popover.
+          <ul className={cn("-mx-2 pt-1", EPISODES_FLOOR)}>
             {overview.episodes.slice(0, 3).map((episode) => (
               <EpisodeRow
                 key={episode.id}
@@ -493,6 +600,7 @@ type ThreadEntry = NonNullable<Status["latest"]>["threads"][number];
  */
 function ThreadRow({
   thread,
+  present,
   running,
   hot,
   expanded,
@@ -504,6 +612,8 @@ function ThreadRow({
   onKill,
 }: {
   thread: ThreadEntry;
+  /** False when the latest reading left this thread out: CPU is unknown, memory is the last seen. */
+  present: boolean;
   /** Null while the overview loads. */
   running: boolean | null;
   hot: boolean;
@@ -538,10 +648,13 @@ function ThreadRow({
             <span className="shrink-0 text-xs font-normal text-muted-foreground max-sm:sr-only">· running</span>
           ) : null}
         </button>
-        <span className={cn(CPU_COLUMN, "font-medium tabular-nums text-foreground", hot && ALERT_TEXT.hot)}>
-          {cpuText(thread.cpu)}
+        <span
+          title={present ? undefined : "Not in the latest reading"}
+          className={cn(CPU_COLUMN, "font-medium tabular-nums", present ? "text-foreground" : "text-muted-foreground", hot && ALERT_TEXT.hot)}
+        >
+          {present ? cpuText(thread.cpu) : "—"}
         </span>
-        <span className={cn(MEM_COLUMN, "tabular-nums text-foreground")}>
+        <span className={cn(MEM_COLUMN, "tabular-nums", present ? "text-foreground" : "text-muted-foreground")}>
           {thread.memBytes === null ? "—" : bytesText(thread.memBytes)}
         </span>
         <button
@@ -627,6 +740,10 @@ const CPU_COLUMN = "w-10 shrink-0 text-right";
 const MEM_COLUMN = "w-16 shrink-0 text-right";
 /** The "…" toggle; 44px wide under a finger. */
 const ACTIONS_COLUMN = "w-8 shrink-0 max-md:pointer-coarse:w-11";
+/** Room for three lines (rows or the idle fold), 32px each or 44px under a finger, and the outside-BB line. */
+const LIST_FLOOR = "min-h-30 max-md:pointer-coarse:min-h-39";
+/** Room for three hot spells and the list's top padding. */
+const EPISODES_FLOOR = "min-h-25 max-md:pointer-coarse:min-h-34";
 
 function Section({ title, columns, children }: { title: string; columns?: ReactNode; children: ReactNode }) {
   return (

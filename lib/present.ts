@@ -113,21 +113,8 @@ export function threadMeta(processes: number, running: boolean | null): string {
   return running === null ? count : `${count} · ${running ? "running a turn" : "no turn running"}`;
 }
 
-/** A thread holding less resident memory than this, at under 1% CPU, is idle. */
+/** A thread holding less resident memory than this, at under 1% CPU, is idle; the popover folds it away. */
 export const IDLE_MEM_BYTES = 1024 ** 3;
-
-/**
- * Busy threads, most CPU first, and the idle ones the popover folds away:
- * under 1% CPU as shown (`<1%`) and under `IDLE_MEM_BYTES` of memory. A
- * thread whose memory is unknown counts as small.
- */
-export function splitIdle<T extends { cpu: number; memBytes?: number | null }>(
-  threads: readonly T[],
-): { busy: T[]; idle: T[] } {
-  const isIdle = (thread: T) => cpuText(thread.cpu) === "<1%" && (thread.memBytes ?? 0) < IDLE_MEM_BYTES;
-  const byCpu = [...threads].sort((a, b) => b.cpu - a.cpu);
-  return { busy: byCpu.filter((thread) => !isIdle(thread)), idle: byCpu.filter(isIdle) };
-}
 
 export interface Tick {
   at: number;
