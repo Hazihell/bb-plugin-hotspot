@@ -11,27 +11,23 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
-import type { Episode, KillPlanView, Overview, Status, rpcContract } from "../lib/contract";
-import { type FooterTone, footerView } from "../lib/footer";
+import type { Episode, KillPlanView, Overview, rpcContract } from "../lib/contract";
+import { footerView } from "../lib/footer";
 import { thermalLabel } from "../lib/labels";
 import { usePortalScopeProps } from "../lib/portal-scope";
+import { cpuText, dayClockText, durationText, pct, threadMeta } from "../lib/present";
 import { SAMPLED } from "../lib/signals";
 import { cn } from "../lib/utils";
-import { useStatus } from "../hooks/use-status";
+import { type StatusState, useStatus } from "../hooks/use-status";
+import { ErrorNote, HeatDot, SkeletonLine, VerdictBlock, thermalSwatch } from "./heat";
+import { KillConfirm } from "./kill-confirm";
 import { Button } from "./ui/button";
 import { Icon } from "./ui/icon";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
-const TONE_CLASS: Record<FooterTone, string> = {
-  calm: "bg-emerald-500",
-  warm: "bg-amber-400",
-  hot: "bg-destructive",
-  idle: "bg-muted-foreground/40",
-};
-
-const pct = (value: number) => `${Math.round(value)}%`;
-const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+/** Touch targets grow to 44px on a phone. */
+const TOUCH = "max-md:pointer-coarse:h-11";
 
 /** The first sidebar footer menu that is laid out (the desktop sidebar or the open drawer). */
 function visibleFooterMenu(): HTMLElement | null {
@@ -97,10 +93,25 @@ function useFooterSlot(): HTMLLIElement | null {
   return slot;
 }
 
+
+/**
+ * On a phone the footer lives in BB's sidebar drawer, which stays open when a
+ * plugin navigates. Close it with BB's own sidebar toggle, and only when the
+ * indicator really sits in an open drawer.
+ */
+function closeSidebarDrawer(from: Element) {
+  if (from.closest('[data-sidebar="panel"][role="dialog"][data-state="open"]') === null) return;
+  const toggle = Array.from(document.querySelectorAll<HTMLButtonElement>('button[aria-label^="Toggle sidebar"]')).find(
+    (button) => button.getClientRects().length > 0,
+  );
+  toggle?.click();
+}
+
 /** App overlay: mounts the indicator into the footer. */
 export function FooterIndicator() {
   const slot = useFooterSlot();
-  const status = useStatus();
+  const state = useStatus();
+  const { status } = state;
   const [open, setOpen] = useState(false);
   if (slot === null) return null;
   const view = footerView({
@@ -108,21 +119,35 @@ export function FooterIndicator() {
     hot: status?.open != null,
     cpuThreshold: status?.cpuThreshold ?? 80,
   });
+  const tooltip = state.error !== null && status === null ? `Hotspot: can't read the sampler (${state.error})` : view.tooltip;
+  // A bare percentage next to other footer readouts is ambiguous; say what it is while calm.
+  const calmCpu = view.level === null && view.title === null && view.cpu !== "—";
   return createPortal(
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
-          title={view.tooltip}
-          aria-label={view.tooltip}
+          title={tooltip}
+          aria-label={tooltip}
           data-testid="hotspot-footer-indicator"
-          className="flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-xs tabular-nums text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+          className={cn(
+            "flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-xs tabular-nums text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring max-md:pointer-coarse:text-sm",
+            TOUCH,
+          )}
         >
-          <span aria-hidden="true" className={cn("size-2 shrink-0 rounded-full", TONE_CLASS[view.tone])} />
+          <HeatDot tone={view.tone} className="size-2 max-md:pointer-coarse:size-2.5" />
           {/* Level and CPU never shrink; only the thread title is cut. */}
-          <span className={cn("flex min-w-0 items-baseline gap-1 whitespace-nowrap", view.tone === "hot" && "text-destructive")}>
+          <span
+            className={cn(
+              "flex min-w-0 items-baseline gap-1 whitespace-nowrap",
+              view.tone === "hot" && "font-medium text-destructive",
+            )}
+          >
             {view.level === null ? null : <span className="shrink-0">{view.level} ·</span>}
-            <span className="shrink-0">{view.cpu}</span>
+            <span className="shrink-0">
+              {view.cpu}
+              {calmCpu ? <span className="ml-1 text-muted-foreground/80">CPU</span> : null}
+            </span>
             {view.title === null ? null : <span className="min-w-0 truncate">· {view.title}</span>}
           </span>
         </button>
@@ -134,7 +159,15 @@ export function FooterIndicator() {
         mobileTitle="Hotspot"
         className="w-[26rem] max-w-[calc(100vw-1rem)] p-0"
       >
-        {open ? <HotspotPopover status={status} close={() => setOpen(false)} /> : null}
+        {open ? (
+          <HotspotPopover
+            state={state}
+            close={() => {
+              setOpen(false);
+              closeSidebarDrawer(slot);
+            }}
+          />
+        ) : null}
       </PopoverContent>
     </Popover>,
     slot,
@@ -152,263 +185,200 @@ function useOverview() {
   return { overview, refetch };
 }
 
-function HotspotPopover({ status, close }: { status: Status | null; close: () => void }) {
+function HotspotPopover({ state, close }: { state: StatusState; close: () => void }) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const { overview, refetch } = useOverview();
   const [plan, setPlan] = useState<KillPlanView | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const { status } = state;
   const latest = status?.latest ?? null;
 
   const planKill = (threadId: string) => {
     setBusy(`kill:${threadId}`);
-    rpc.call("killPlan", { threadId }).then(
-      (next) => setPlan(next),
-      (error: unknown) => toast.error("Could not plan the kill", { description: errorText(error) }),
-    ).finally(() => setBusy(null));
+    rpc
+      .call("killPlan", { threadId })
+      .then(
+        (next) => setPlan(next),
+        (error: unknown) => toast.error("Could not plan the kill", { description: errorText(error) }),
+      )
+      .finally(() => setBusy(null));
   };
 
   const stopTurn = (threadId: string, title: string) => {
     setBusy(`stop:${threadId}`);
-    rpc.call("stopTurn", { threadId }).then(
-      () => {
-        toast.success(`Stopped the turn in ${title}`);
-        refetch();
-      },
-      (error: unknown) => toast.error("Could not stop the turn", { description: errorText(error) }),
-    ).finally(() => setBusy(null));
+    rpc
+      .call("stopTurn", { threadId })
+      .then(
+        () => {
+          toast.success(`Stopped the turn in ${title}`);
+          refetch();
+        },
+        (error: unknown) => toast.error("Could not stop the turn", { description: errorText(error) }),
+      )
+      .finally(() => setBusy(null));
   };
 
   if (plan !== null) {
     return <KillConfirm plan={plan} onDone={() => setPlan(null)} />;
   }
 
-  return (
-    <div className="max-h-[70vh] space-y-3 overflow-y-auto p-3 text-sm">
-      {latest === null ? (
-        <p className="text-muted-foreground">Waiting for the first sample…</p>
-      ) : (
-        <div className="grid grid-cols-3 gap-2">
-          <Figure label="Heat" value={thermalLabel(latest.thermal)} detail={status?.open ? `hot since ${clock(status.open.startAt)}` : `at ${clock(latest.at)}`} />
-          <Figure label="CPU" value={pct(latest.cpu)} detail={`threshold ${pct(status?.cpuThreshold ?? 80)}`} />
-          <Figure label="Load" value={latest.load.toFixed(2)} detail="per core" />
-        </div>
-      )}
+  const threads = latest?.threads.slice(0, 5) ?? [];
+  const others = latest?.procs.filter((proc) => proc.cpu >= 1).slice(0, 3) ?? [];
 
-      <Section title="Busiest threads">
-        {latest === null || latest.threads.length === 0 ? (
-          <Empty>No BB thread is using CPU.</Empty>
+  return (
+    <div className="max-h-[min(38rem,80dvh)] overflow-y-auto text-sm">
+      <div className="space-y-3 p-4 pb-3">
+        {state.error !== null && status === null ? (
+          <ErrorNote title="Can't read Hotspot right now" detail={state.error} onRetry={state.retry} />
         ) : (
-          <ul className="divide-y divide-border rounded-md border border-border">
-            {latest.threads.slice(0, 5).map((thread) => {
-              const title = thread.title ?? thread.threadId;
-              const running = overview?.running[thread.threadId] === true;
-              return (
-                <li key={thread.threadId} className="space-y-1.5 px-2.5 py-2">
-                  <div className="flex items-baseline gap-2">
-                    <span className="min-w-0 flex-1 truncate font-medium" title={title}>
-                      {title}
-                    </span>
-                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                      {pct(thread.cpu)} · {thread.processes} proc
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 px-2"
-                      onClick={() => {
-                        close();
-                        navigate.toThread(thread.threadId);
-                      }}
-                    >
-                      Open
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 px-2"
-                      disabled={!running || busy !== null}
-                      onClick={() => stopTurn(thread.threadId, title)}
-                    >
-                      Stop turn
-                    </Button>
-                    {overview?.allowKill === true ? (
+          <VerdictBlock status={status} size="sheet" onNavigate={close} />
+        )}
+      </div>
+
+      {latest === null ? null : (
+        <Section title="Busiest threads">
+          {threads.length === 0 ? (
+            <Empty>No BB thread is using the CPU.</Empty>
+          ) : (
+            <ul className="divide-y divide-border">
+              {threads.map((thread) => {
+                const title = thread.title ?? thread.threadId;
+                const running = overview === null ? null : overview.running[thread.threadId] === true;
+                // The meta line under the title says why Stop turn is off ("no turn running").
+                const metaId = `hotspot-meta-${thread.threadId}`;
+                return (
+                  <li key={thread.threadId} className="py-2.5">
+                    <div className="flex items-baseline gap-3">
+                      <span className="min-w-0 flex-1 truncate font-medium text-foreground" title={title}>
+                        {title}
+                      </span>
+                      <span className="shrink-0 font-medium tabular-nums text-foreground">{cpuText(thread.cpu)}</span>
+                    </div>
+                    <p id={metaId} className="text-xs text-muted-foreground">
+                      {threadMeta(thread.processes, running)}
+                    </p>
+                    <div className="mt-2 flex items-center gap-1.5">
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-7 px-2 text-destructive"
-                        disabled={busy !== null}
-                        onClick={() => planKill(thread.threadId)}
+                        className={cn("h-7 px-2.5", TOUCH)}
+                        onClick={() => {
+                          close();
+                          navigate.toThread(thread.threadId);
+                        }}
                       >
-                        {busy === `kill:${thread.threadId}` ? "Planning…" : "Kill processes…"}
+                        Open
                       </Button>
-                    ) : null}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </Section>
-
-      {latest !== null && latest.procs.length > 0 ? (
-        <Section title="Outside BB threads">
-          <ul className="space-y-0.5 text-xs text-muted-foreground">
-            {latest.procs.slice(0, 3).map((proc) => (
-              <li key={proc.pid} className="flex gap-2">
-                <span className="min-w-0 flex-1 truncate">{proc.name}</span>
-                <span className="tabular-nums">{pct(proc.cpu)}</span>
-              </li>
-            ))}
-          </ul>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className={cn("h-7 px-2.5", TOUCH)}
+                        disabled={running !== true || busy !== null}
+                        aria-describedby={metaId}
+                        onClick={() => stopTurn(thread.threadId, title)}
+                      >
+                        {busy === `stop:${thread.threadId}` ? "Stopping…" : "Stop turn"}
+                      </Button>
+                      {overview?.allowKill === true ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className={cn("ml-auto h-7 px-2 text-muted-foreground hover:text-destructive", TOUCH)}
+                          disabled={busy !== null}
+                          onClick={() => planKill(thread.threadId)}
+                        >
+                          {busy === `kill:${thread.threadId}` ? "Checking…" : "Kill processes…"}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {others.length === 0 ? null : (
+            <p className="truncate pb-1 text-xs text-muted-foreground">
+              Also busy outside BB: {others.map((proc) => `${proc.name} ${pct(proc.cpu)}`).join(" · ")}
+            </p>
+          )}
         </Section>
-      ) : null}
+      )}
 
-      <Section title="Recent hot episodes">
+      <Section title="Recent hot spells">
         {overview === null ? (
-          <Empty>Loading…</Empty>
+          <div className="space-y-2 py-2">
+            <SkeletonLine className="w-3/4" />
+            <SkeletonLine className="w-2/3" />
+          </div>
         ) : overview.episodes.length === 0 ? (
-          <Empty>No hot episodes recorded.</Empty>
+          <Empty>None recorded. Hotspot will tell you when your Mac starts running hot.</Empty>
         ) : (
-          <ul className="space-y-0.5 text-xs">
+          <ul className="-mx-2">
             {overview.episodes.map((episode) => (
-              <EpisodeRow key={episode.id} episode={episode} />
+              <EpisodeRow
+                key={episode.id}
+                episode={episode}
+                onOpen={() => {
+                  close();
+                  navigate.toPluginPanel("hotspot", { subPath: `episode/${episode.id}` });
+                }}
+              />
             ))}
           </ul>
         )}
       </Section>
 
+      <div className="border-t border-border p-2">
+        <Button
+          variant="ghost"
+          className={cn("h-9 w-full justify-between px-2 text-sm font-normal text-muted-foreground hover:text-foreground", TOUCH)}
+          onClick={() => {
+            close();
+            navigate.toPluginPanel("hotspot");
+          }}
+        >
+          See the full history
+          <Icon name="ChevronRight" className="size-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function EpisodeRow({ episode, onOpen }: { episode: Episode; onOpen: () => void }) {
+  const top = episode.culprits[0] ?? null;
+  const now = Date.now();
+  const end = episode.endAt ?? episode.lastHotAt;
+  return (
+    <li>
       <button
         type="button"
-        className="text-xs text-primary underline-offset-4 hover:underline"
-        onClick={() => {
-          close();
-          navigate.toPluginPanel("hotspot");
-        }}
+        onClick={onOpen}
+        className="flex min-h-10 w-full items-center gap-3 rounded-md px-2 py-1.5 text-left outline-none hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring max-md:pointer-coarse:min-h-12"
       >
-        Open the Hotspot page
+        <span className="min-w-0 flex-1">
+          <span className="block text-xs text-foreground">
+            {dayClockText(episode.startAt, now)} ·{" "}
+            {episode.endAt === null ? <span className="text-destructive">still hot</span> : durationText(end - episode.startAt)}
+          </span>
+          <span className="block truncate text-xs text-muted-foreground">
+            {top === null ? "No BB thread to blame" : (top.title ?? top.threadId)}
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <span aria-hidden="true" className={cn("size-2 rounded-sm", thermalSwatch(episode.peakThermal))} />
+          {thermalLabel(episode.peakThermal)}
+        </span>
+        <Icon name="ChevronRight" className="size-3.5 shrink-0 text-muted-foreground" />
       </button>
-    </div>
-  );
-}
-
-function EpisodeRow({ episode }: { episode: Episode }) {
-  const top = episode.culprits[0] ?? null;
-  return (
-    <li className="flex gap-2">
-      <span className="shrink-0 tabular-nums text-muted-foreground">
-        {clock(episode.startAt)}–{episode.endAt === null ? "now" : clock(episode.endAt)}
-      </span>
-      <span className="shrink-0">{thermalLabel(episode.peakThermal)}</span>
-      <span className="min-w-0 flex-1 truncate text-muted-foreground">
-        {top === null ? "no thread" : (top.title ?? top.threadId)}
-      </span>
     </li>
-  );
-}
-
-/** Step two of a kill: exactly what gets SIGTERM, what is spared and why, then confirm. */
-function KillConfirm({ plan, onDone }: { plan: KillPlanView; onDone: () => void }) {
-  const rpc = useRpc<typeof rpcContract>();
-  const [applying, setApplying] = useState(false);
-  const title = plan.title ?? plan.threadId;
-
-  const apply = () => {
-    setApplying(true);
-    rpc.call("killApply", { planId: plan.planId }).then(
-      (result) => {
-        const summary = `${result.terminated} exited, ${result.killed} needed SIGKILL, ${result.refused} refused`;
-        toast.success(`Killed processes in ${title}`, { description: summary });
-        onDone();
-      },
-      (error: unknown) => {
-        toast.error("Kill failed", { description: errorText(error) });
-        onDone();
-      },
-    );
-  };
-
-  return (
-    <div className="max-h-[70vh] space-y-3 overflow-y-auto p-3 text-sm">
-      <div className="flex items-start gap-2">
-        <Icon name="TriangleAlert" className="mt-0.5 size-4 shrink-0 text-destructive" />
-        <p className="min-w-0">
-          {plan.targets.length === 0 ? (
-            <>Nothing in <strong>{title}</strong> can be killed.</>
-          ) : (
-            <>
-              Send SIGTERM to {plan.targets.length} process{plan.targets.length === 1 ? "" : "es"} in{" "}
-              <strong>{title}</strong>. Any still running after 5 seconds get SIGKILL.
-            </>
-          )}
-        </p>
-      </div>
-      {plan.targets.length === 0 ? null : (
-        <ProcessList
-          rows={plan.targets.map((target) => ({ ...target, note: target.command }))}
-          className="border-destructive/40"
-        />
-      )}
-      {plan.excluded.length === 0 ? null : (
-        <Section title="Spared">
-          <ProcessList rows={plan.excluded.map((entry) => ({ ...entry, note: entry.reason }))} />
-        </Section>
-      )}
-      <div className="flex justify-end gap-2">
-        <Button size="sm" variant="ghost" onClick={onDone} disabled={applying}>
-          {plan.targets.length === 0 ? "Back" : "Cancel"}
-        </Button>
-        {plan.targets.length === 0 ? null : (
-          <Button size="sm" variant="destructive" onClick={apply} disabled={applying}>
-            {applying ? "Killing…" : `Kill ${plan.targets.length}`}
-          </Button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ProcessList({
-  rows,
-  className,
-}: {
-  rows: Array<{ pid: number; name: string; cpu: number; note: string }>;
-  className?: string;
-}) {
-  return (
-    <ul className={cn("divide-y divide-border rounded-md border border-border text-xs", className)}>
-      {rows.map((row) => (
-        <li key={row.pid} className="px-2.5 py-1.5">
-          <div className="flex gap-2">
-            <span className="min-w-0 flex-1 truncate font-medium">{row.name}</span>
-            <span className="shrink-0 tabular-nums text-muted-foreground">
-              pid {row.pid} · {row.cpu.toFixed(1)}%
-            </span>
-          </div>
-          <div className="truncate text-muted-foreground" title={row.note}>
-            {row.note}
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function Figure({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return (
-    <div className="min-w-0 rounded-md border border-border px-2 py-1.5">
-      <div className="text-[11px] text-muted-foreground">{label}</div>
-      <div className="truncate font-medium capitalize tabular-nums">{value}</div>
-      <div className="truncate text-[11px] text-muted-foreground">{detail}</div>
-    </div>
   );
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="space-y-1.5">
+    <section className="border-t border-border px-4 pt-3 pb-2">
       <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
       {children}
     </section>
@@ -416,5 +386,5 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 function Empty({ children }: { children: ReactNode }) {
-  return <p className="text-xs text-muted-foreground">{children}</p>;
+  return <p className="py-2 text-xs text-muted-foreground">{children}</p>;
 }

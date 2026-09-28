@@ -17,9 +17,9 @@ export const BLAME_MIN_CPU = 5;
 
 export const pct = (value: number) => `${Math.round(value)}%`;
 
-/** A thread's CPU for a list: `41%`, or `idle` below half a percent. */
+/** A thread's CPU for a list: `41%`, or `<1%` rather than a misleading `0%`. */
 export function cpuText(cpu: number): string {
-  return cpu < 0.5 ? "idle" : pct(cpu);
+  return cpu < 0.5 ? "<1%" : pct(cpu);
 }
 
 export interface Verdict {
@@ -107,11 +107,10 @@ export function durationText(ms: number): string {
   return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
 }
 
-/** `41% CPU · 7 processes · running a turn`; `running` is null while unknown. */
-export function threadMeta(thread: { cpu: number; processes: number }, running: boolean | null): string {
-  const processes = `${thread.processes} process${thread.processes === 1 ? "" : "es"}`;
-  const turn = running === null ? null : running ? "running a turn" : "no turn running";
-  return [thread.cpu < 0.5 ? "idle" : `${pct(thread.cpu)} CPU`, processes, turn].filter((part) => part !== null).join(" · ");
+/** `7 processes · running a turn` under a thread's title; `running` is null while unknown. */
+export function threadMeta(processes: number, running: boolean | null): string {
+  const count = `${processes} process${processes === 1 ? "" : "es"}`;
+  return running === null ? count : `${count} · ${running ? "running a turn" : "no turn running"}`;
 }
 
 export interface Tick {

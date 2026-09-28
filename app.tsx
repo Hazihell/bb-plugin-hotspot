@@ -430,7 +430,7 @@ function EmptyState({ children }: { children: ReactNode }) {
 function HotspotPage() {
   const [range, setRange] = useState<Range>("24h");
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const status = useStatus();
+  const { status } = useStatus();
   const { timeline, error } = useTimeline(range);
 
   return (
@@ -484,7 +484,7 @@ function HotspotPage() {
 
 /** One word on the sidebar row while the Mac is hot; nothing otherwise. */
 function SidebarBadge() {
-  const status = useStatus();
+  const { status } = useStatus();
   if (status?.open) return <span className="text-xs font-medium text-destructive">Hot</span>;
   const thermal = status?.latest?.thermal ?? null;
   if (thermal !== null && thermal >= 1) {

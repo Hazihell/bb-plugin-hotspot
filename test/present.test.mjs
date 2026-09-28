@@ -78,11 +78,11 @@ test("durations", () => {
 });
 
 test("thread CPU and meta line", () => {
-  assert.equal(cpuText(0.2), "idle");
+  assert.equal(cpuText(0.2), "<1%");
   assert.equal(cpuText(41.6), "42%");
-  assert.equal(threadMeta({ cpu: 41.6, processes: 7 }, true), "42% CPU · 7 processes · running a turn");
-  assert.equal(threadMeta({ cpu: 0, processes: 1 }, false), "idle · 1 process · no turn running");
-  assert.equal(threadMeta({ cpu: 3, processes: 2 }, null), "3% CPU · 2 processes");
+  assert.equal(threadMeta(7, true), "7 processes · running a turn");
+  assert.equal(threadMeta(1, false), "1 process · no turn running");
+  assert.equal(threadMeta(2, null), "2 processes");
 });
 
 test("day ticks land on whole hours and thin out when narrow", () => {
