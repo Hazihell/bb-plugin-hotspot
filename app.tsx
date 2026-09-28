@@ -9,16 +9,11 @@ import type { MouseEvent, ReactNode } from "react";
 import { definePluginApp, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { Episode, Range, Status, Timeline, rpcContract } from "./lib/contract";
+import { thermalLabel } from "./lib/labels";
 import { EPISODE_OPENED, type EpisodeOpenedSignal, SAMPLED } from "./lib/signals";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-
-const THERMAL_LABELS = ["nominal", "moderate", "heavy", "trapping", "sleeping"];
-
-function thermalLabel(level: number | null): string {
-  return level === null ? "unknown" : (THERMAL_LABELS[level] ?? `level ${level}`);
-}
 
 /** Status colors for the thermal strip; always shown beside a text label. */
 function thermalClass(level: number | null): string {

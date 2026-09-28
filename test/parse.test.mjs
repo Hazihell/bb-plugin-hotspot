@@ -8,7 +8,8 @@ import {
   processName,
   topUnattributed,
 } from "../lib/procs.ts";
-import { parseThermal, thermalLabel } from "../lib/thermal.ts";
+import { thermalLabel } from "../lib/labels.ts";
+import { parseThermal } from "../lib/thermal.ts";
 
 test("parseThermal reads the level notifyutil prints", () => {
   assert.equal(parseThermal("com.apple.system.thermalpressurelevel 0\n"), 0);

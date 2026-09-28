@@ -7,37 +7,11 @@
  */
 import os from "node:os";
 import { attributeThreads, groupByThread, readProcesses, topUnattributed } from "./procs";
+import type { Sample } from "./schemas";
 import { readThermal } from "./thermal";
 
 export const TOP_THREADS = 5;
 export const TOP_PROCESSES = 5;
-
-export interface ThreadEntry {
-  threadId: string;
-  title: string | null;
-  /** Share of the whole machine, 0–100 (not per-core `ps` percent). */
-  cpu: number;
-  processes: number;
-}
-
-export interface ProcessEntry {
-  pid: number;
-  name: string;
-  /** Share of the whole machine, 0–100. */
-  cpu: number;
-}
-
-export interface Sample {
-  at: number;
-  /** macOS thermal pressure 0–4, or null where it cannot be read. */
-  thermal: number | null;
-  /** Machine-wide CPU busy, 0–100. */
-  cpu: number;
-  /** One-minute load average divided by core count. */
-  load: number;
-  threads: ThreadEntry[];
-  procs: ProcessEntry[];
-}
 
 interface CpuTicks {
   busy: number;

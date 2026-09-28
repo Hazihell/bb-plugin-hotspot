@@ -12,13 +12,6 @@ const run = promisify(execFile);
 
 export const THERMAL_KEY = "com.apple.system.thermalpressurelevel";
 
-export const THERMAL_LABELS = ["nominal", "moderate", "heavy", "trapping", "sleeping"] as const;
-
-export function thermalLabel(level: number | null): string {
-  if (level === null) return "unknown";
-  return THERMAL_LABELS[level] ?? `level ${level}`;
-}
-
 /** `com.apple.system.thermalpressurelevel 2` → 2. Anything else → null. */
 export function parseThermal(stdout: string): number | null {
   const match = /^\s*com\.apple\.system\.thermalpressurelevel\s+(\d+)\s*$/m.exec(stdout);

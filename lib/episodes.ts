@@ -8,38 +8,9 @@
  * over the episode's hot samples, so a thread that burned hard for the whole
  * episode outranks one that spiked once.
  */
-import type { Sample } from "./sample";
+import type { Episode, Sample } from "./schemas";
 
-export interface Culprit {
-  threadId: string;
-  title: string | null;
-  /** Sum of the thread's CPU % over the hot samples it appeared in. */
-  cpuSum: number;
-  /** Hot samples in which the thread was in the top five. */
-  samples: number;
-  peakCpu: number;
-}
-
-export interface OtherCulprit {
-  name: string;
-  cpuSum: number;
-  samples: number;
-}
-
-export interface Episode {
-  /** Row id once stored; null while it only exists in memory. */
-  id: number | null;
-  startAt: number;
-  /** Null while the episode is open. */
-  endAt: number | null;
-  lastHotAt: number;
-  peakThermal: number | null;
-  peakCpu: number;
-  /** Hot samples counted into the episode. */
-  samples: number;
-  culprits: Culprit[];
-  others: OtherCulprit[];
-}
+export type { Culprit, Episode, OtherCulprit } from "./schemas";
 
 export interface DetectorConfig {
   cpuThreshold: number;

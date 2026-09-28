@@ -8,8 +8,7 @@
  * host, so the plugin ships no native module of its own.
  */
 import type Database from "better-sqlite3";
-import type { Episode } from "./episodes";
-import type { Sample } from "./sample";
+import type { Episode, Sample } from "./schemas";
 
 type Db = Database.Database;
 

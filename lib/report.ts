@@ -1,14 +1,8 @@
 /**
  * Read-side shaping shared by the page, the CLI and the agent tool.
  */
-import type { Episode } from "./episodes";
-import type { Sample } from "./sample";
-
-export interface TimelinePoint {
-  at: number;
-  cpu: number | null;
-  thermal: number | null;
-}
+import { thermalLabel } from "./labels";
+import type { Episode, Sample, TimelinePoint } from "./schemas";
 
 /**
  * Fold samples into `count` equal buckets over [from, to).
@@ -88,18 +82,13 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(minutes / 60)}h${pad(minutes % 60)}m`;
 }
 
-const THERMAL = ["nominal", "moderate", "heavy", "trapping", "sleeping"];
-export function thermalText(level: number | null): string {
-  return level === null ? "unknown" : (THERMAL[level] ?? `level ${level}`);
-}
-
 const pct = (value: number) => `${Math.round(value)}%`;
 const threadName = (entry: { threadId: string; title: string | null }) =>
   entry.title === null ? entry.threadId : `${entry.title} (${entry.threadId})`;
 
 export function describeSample(sample: Sample): string[] {
   const lines = [
-    `${formatWhen(sample.at)}  thermal ${thermalText(sample.thermal)}, CPU ${pct(sample.cpu)}, load/core ${sample.load.toFixed(2)}`,
+    `${formatWhen(sample.at)}  thermal ${thermalLabel(sample.thermal)}, CPU ${pct(sample.cpu)}, load/core ${sample.load.toFixed(2)}`,
   ];
   if (sample.threads.length === 0) lines.push("  threads: none using CPU");
   for (const thread of sample.threads) {
@@ -115,7 +104,7 @@ export function describeEpisode(episode: Episode, culpritLimit: number): string[
   const end = episode.endAt ?? episode.lastHotAt;
   const lines = [
     `#${episode.id ?? "?"}  ${formatWhen(episode.startAt)} → ${episode.endAt === null ? "ongoing" : formatWhen(end)}` +
-      `  (${formatDuration(end - episode.startAt)}), peak thermal ${thermalText(episode.peakThermal)}, peak CPU ${pct(episode.peakCpu)}`,
+      `  (${formatDuration(end - episode.startAt)}), peak thermal ${thermalLabel(episode.peakThermal)}, peak CPU ${pct(episode.peakCpu)}`,
   ];
   const samples = Math.max(1, episode.samples);
   const culprits = episode.culprits.slice(0, culpritLimit);
@@ -181,7 +170,7 @@ export function summarizeWindow(samples: Sample[], threadLimit: number): WindowS
 export function describeWindow(summary: WindowSummary): string[] {
   if (summary.samples === 0) return ["No samples in this window (the Mac was asleep or Hotspot was off)."];
   const lines = [
-    `${summary.samples} samples: CPU avg ${pct(summary.avgCpu)}, peak ${pct(summary.peakCpu)}; peak thermal ${thermalText(summary.peakThermal)}`,
+    `${summary.samples} samples: CPU avg ${pct(summary.avgCpu)}, peak ${pct(summary.peakCpu)}; peak thermal ${thermalLabel(summary.peakThermal)}`,
   ];
   for (const [index, thread] of summary.threads.entries()) {
     lines.push(`  ${index + 1}. ${threadName(thread)}  avg ${pct(thread.avgCpu)}, peak ${pct(thread.peakCpu)}`);
