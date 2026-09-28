@@ -45,30 +45,47 @@ keeps the top five culprits per episode.
 `kill` prints which of a thread's processes would get SIGTERM and which are
 spared, with the reason; nothing is signalled without `--yes`. With `--yes`
 it applies that plan: SIGTERM, then SIGKILL after 5 seconds for survivors
-that are still the same process. Run `kill --yes` only when the user asks
-for it, and only for the thread they name. There is no agent tool for
-killing processes or stopping a thread's turn, on purpose.
+that are still the same process. `--yes` is refused unless a person typed
+the command in a terminal: the calling `bb` process must have a
+controlling terminal and no provider bridge above it, so an agent's shell
+cannot apply a kill. Agents may run the dry run; to kill, point the user to
+the popover. There is no agent tool for killing processes or stopping a
+thread's turn, on purpose.
 
 ## What a kill touches
 
-A target must belong to the thread (the attribution rule under Limits) and
-be owned by the user. Always spared, and listed with the reason:
+A process belongs to a thread for a kill only when walking up from it
+reaches a process BB launched with that thread's `BB_THREAD_ID`, or a
+detached process (parent launchd) carrying that id, without first crossing
+a **wall**. Walls are never targets, and nothing below a wall belongs to the
+thread, even when it inherited the id:
 
-- the thread's agent: a thread process whose parent is BB, or whose parent
-  is outside the thread (the provider CLI such as `claude` or `codex`);
-- BB itself: anything under `bb.app` or named `bb`/`bb Helper`, including a
-  `bb` CLI call, and Hotspot's own process chain;
-- the shell running a protected process, and the rest of a `bb` CLI call's
-  command (`bb hotspot kill … | head`);
-- other users' processes, system binaries (`/System`, `/usr/libexec`,
-  `/usr/sbin`, `/sbin`), and app bundles in `/Applications` unless they run
-  `--headless` or with a remote-debugging port.
+- BB itself (anything under `bb.app`, `bb`, `bb Helper`, a `bb` CLI call)
+  and Hotspot's own process chain;
+- other users' processes (`login`, `sudo`), system binaries (`/System`,
+  `/usr/libexec`, `/usr/sbin`, `/sbin`);
+- app bundles in `/Applications` unless they run `--headless` or with a
+  remote-debugging port, so an app opened from a thread (Orca, VS Code,
+  Docker) keeps its terminals and helpers;
+- interactive shells: a login shell (`-zsh`) or one with no `-c` and no
+  script.
 
-Processes outside the thread are never listed. The plan id expires after
-two minutes and works once. Before each signal the server re-reads the
-process table and refuses a target whose start time or command line
-changed (a recycled pid) or that no longer passes these rules. Every kill
-is logged with its counts (`bb plugin logs hotspot`).
+Below the process BB launched, the **agent chain** is spared: the launched
+process and everything down to its first work shell, passing through
+wrappers (`npx`, `npm exec`, `uvx`, `sh -c`) and a program relaunching its
+own executable (Gemini's `node` → `node`). Any other child of the agent (an
+MCP server, `rg`) is a helper and is spared with everything under it. Work
+starts at a shell the agent runs (`zsh -c`, `bash -lc`), and detached
+processes carrying the id (a dev server reparented to launchd) are work
+too. The shell running a spared process and the rest of a `bb` CLI call's
+command (`bb hotspot kill … | head`) are also spared.
+
+The plan lists the thread's targets and spared processes, plus any process
+the id reached only through a wall. The plan id expires after two minutes
+and works once. Before each signal the server re-reads the process table
+and refuses a target whose start time or command line changed (a recycled
+pid) or that no longer passes these rules. Every kill is logged with its
+counts (`bb plugin logs hotspot`).
 
 ## In the BB window
 
@@ -118,6 +135,6 @@ Set with `bb plugin config hotspot set <key> <value>`:
   kills, and it never renices anything. Stop turn interrupts a thread's
   running turn through BB, like BB's own stop button; the thread can be
   resumed.
-- Processes started from Claude Code's tool shell show no environment to
-  `ps`, so one that outlived its shell (reparented to launchd) belongs to no
-  thread and a kill cannot reach it; stop it by hand.
+- A process whose environment `ps` cannot read and whose parent has exited
+  belongs to no thread, so a kill cannot reach it. In practice detached dev
+  servers keep `BB_THREAD_ID` in their environment and are reachable.
