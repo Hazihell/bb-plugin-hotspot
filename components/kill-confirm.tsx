@@ -40,7 +40,7 @@ export function KillConfirm({ plan, onDone }: { plan: KillPlanView; onDone: () =
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
         <div className="flex items-start gap-3">
           <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-destructive/10 text-destructive">
-            <Icon name="TriangleAlert" className="size-4" />
+            <Icon name="AlertTriangle" className="size-4" />
           </span>
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-foreground">

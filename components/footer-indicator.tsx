@@ -546,7 +546,7 @@ function ThreadRow({
             TOUCH,
           )}
         >
-          <Icon name="Ellipsis" fallback="MoreHorizontal" className="size-4" />
+          <Icon name="MoreHorizontal" className="size-4" />
         </button>
       </div>
       {expanded ? (
