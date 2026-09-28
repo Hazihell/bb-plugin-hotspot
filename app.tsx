@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import type { Episode, Range, Timeline, rpcContract } from "./lib/contract";
 import { FooterIndicator } from "@/components/footer-indicator";
 import { ErrorNote, SkeletonLine, VerdictBlock, thermalSwatch } from "@/components/heat";
+import { MetricsRow } from "@/components/metrics";
 import { TimelineChart } from "@/components/timeline-chart";
 import { useStatus } from "@/hooks/use-status";
 import { thermalLabel } from "./lib/labels";
@@ -251,19 +252,20 @@ function HotspotPage({ subPath }: { subPath: string }) {
         {state.error !== null && status === null ? (
           <ErrorNote title="Can't read Hotspot right now" detail={state.error} onRetry={state.retry} />
         ) : (
-          <VerdictBlock status={status} size="page">
+          <div className="space-y-4">
+            <VerdictBlock status={status} size="page" />
+            <MetricsRow status={status} size="page" />
             {latest === null ? null : (
-              <p className="mt-3 text-xs text-muted-foreground">
-                Load {latest.load.toFixed(2)} per core · checked {clockText(latest.at)} · hot at{" "}
-                {pct(status?.cpuThreshold ?? 80)} CPU
+              <p className="text-xs text-muted-foreground">
+                Checked {clockText(latest.at)} · hot at {pct(status?.cpuThreshold ?? 80)} CPU · lines show the last hour
               </p>
             )}
-          </VerdictBlock>
+          </div>
         )}
 
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold text-foreground">CPU and heat</h2>
+            <h2 className="text-sm font-semibold text-foreground">CPU, memory and heat</h2>
             <RangeToggle range={range} onChange={setRange} />
           </div>
           {error === null ? null : <ErrorNote title="Couldn't load the history" detail={error} onRetry={refetch} />}
@@ -298,7 +300,8 @@ function HotspotPage({ subPath }: { subPath: string }) {
         <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
           A hot spell starts after three readings in a row with thermal pressure above nominal or CPU at the hot line,
           and ends after three normal ones. Thread CPU is a share of the whole Mac and comes from <code>ps</code>, which
-          averages over about a minute.
+          averages over about a minute. Memory is what Activity Monitor calls Memory Used (app, wired and compressed);
+          it turns amber or red only when macOS reports memory pressure.
         </p>
       </div>
     </div>

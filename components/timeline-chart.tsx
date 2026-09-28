@@ -1,6 +1,7 @@
 // CPU over the range as one area series on a 0–100% axis, with the thermal
-// level as its own strip underneath (never a second y-axis) and hot episodes
-// shaded. Drawn at the measured pixel width so text and strokes stay crisp.
+// level as its own strip underneath and hot episodes shaded; memory used is
+// a second, shorter plot below on its own 0–100% axis (never a second y-axis
+// on one plot), sharing the time axis and the crosshair. Drawn at the measured pixel width so text and strokes stay crisp.
 // A mouse hovers; a finger taps or drags; the keyboard steps with the arrows.
 // Selecting picks the nearest episode, with a finger-sized tolerance.
 import { type KeyboardEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -15,8 +16,27 @@ const RIGHT = 8;
 const STRIP_H = 8;
 const STRIP_GAP = 6;
 const TICKS_H = 20;
+/** Space between the heat strip and the memory plot. */
+const MEM_GAP = 14;
 /** How far (px) a tap may land from a hot band and still select it. */
 const TAP_SLOP = { mouse: 6, touch: 18 } as const;
+
+type Point = Timeline["points"][number];
+
+/** One path per run of sampled buckets, so sleep and "not yet recording" show as gaps. */
+function sampledRuns(points: Point[], bucketMs: number, value: (point: Point) => number | null) {
+  const out: Array<Array<[number, number]>> = [];
+  let run: Array<[number, number]> = [];
+  for (const point of points) {
+    const reading = value(point);
+    if (reading === null) {
+      if (run.length > 0) out.push(run);
+      run = [];
+    } else run.push([point.at + bucketMs / 2, reading]);
+  }
+  if (run.length > 0) out.push(run);
+  return out;
+}
 
 function useWidth() {
   const ref = useRef<HTMLDivElement>(null);
@@ -48,25 +68,20 @@ export function TimelineChart({
   const [touch, setTouch] = useState(false);
   const compact = width > 0 && width < 520;
   const plotH = compact ? 132 : 176;
+  const memH = compact ? 48 : 64;
   const plotW = Math.max(1, width - GUTTER - RIGHT);
-  const height = plotH + STRIP_GAP + STRIP_H + TICKS_H;
+  const stripBottom = plotH + STRIP_GAP + STRIP_H;
+  const memTop = stripBottom + MEM_GAP;
+  const memBottom = memTop + memH;
+  const height = memBottom + TICKS_H;
   const span = to - from;
   const x = (at: number) => GUTTER + ((at - from) / span) * plotW;
   const y = (cpu: number) => plotH - (Math.min(100, Math.max(0, cpu)) / 100) * (plotH - 2);
+  const yMem = (mem: number) => memBottom - (Math.min(100, Math.max(0, mem)) / 100) * (memH - 2);
 
-  // One path per run of sampled buckets, so sleep and "not yet recording" show as gaps.
-  const runs = useMemo(() => {
-    const out: Array<Array<[number, number]>> = [];
-    let run: Array<[number, number]> = [];
-    for (const point of points) {
-      if (point.cpu === null) {
-        if (run.length > 0) out.push(run);
-        run = [];
-      } else run.push([point.at + bucketMs / 2, point.cpu]);
-    }
-    if (run.length > 0) out.push(run);
-    return out;
-  }, [points, bucketMs]);
+  const runs = useMemo(() => sampledRuns(points, bucketMs, (point) => point.cpu), [points, bucketMs]);
+  const memRuns = useMemo(() => sampledRuns(points, bucketMs, (point) => point.mem), [points, bucketMs]);
+  const hasMemory = memRuns.length > 0;
 
   const firstSampled = points.findIndex((point) => point.cpu !== null);
   const firstX = firstSampled === -1 ? null : x(points[firstSampled].at);
@@ -128,7 +143,7 @@ export function TimelineChart({
         ref={ref}
         role="group"
         tabIndex={0}
-        aria-label="CPU over time. Use the arrow keys to step through it and Enter to open a hot spell."
+        aria-label="CPU and memory over time. Use the arrow keys to step through it and Enter to open a hot spell."
         className="relative touch-pan-y select-none rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
         style={{ height }}
         onPointerMove={onPointerMove}
@@ -218,6 +233,16 @@ export function TimelineChart({
             </text>
 
             <text
+              x={GUTTER + 4}
+              y={10}
+              className="fill-muted-foreground stroke-card text-[10px] font-medium"
+              strokeWidth={3}
+              paintOrder="stroke"
+            >
+              CPU
+            </text>
+
+            <text
               x={GUTTER - 6}
               y={plotH + STRIP_GAP + STRIP_H / 2}
               dy="0.32em"
@@ -225,6 +250,40 @@ export function TimelineChart({
               className="fill-muted-foreground text-[10px]"
             >
               Heat
+            </text>
+
+            {[0, 100].map((grid) => (
+              <g key={`mem-${grid}`}>
+                <line x1={GUTTER} x2={GUTTER + plotW} y1={yMem(grid)} y2={yMem(grid)} className="stroke-border" />
+                <text
+                  x={GUTTER - 6}
+                  y={yMem(grid)}
+                  dy="0.32em"
+                  textAnchor="end"
+                  className="fill-muted-foreground text-[10px] tabular-nums"
+                >
+                  {grid === 0 ? "0" : "100%"}
+                </text>
+              </g>
+            ))}
+            {memRuns.map((run, index) => {
+              const line = run.map(([at, mem]) => `${x(at).toFixed(1)},${yMem(mem).toFixed(1)}`).join(" L");
+              const area = `M${x(run[0][0]).toFixed(1)},${memBottom} L${line} L${x(run[run.length - 1][0]).toFixed(1)},${memBottom} Z`;
+              return (
+                <g key={index}>
+                  <path d={area} className="fill-primary opacity-10" />
+                  <path d={`M${line}`} className="fill-none stroke-primary" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+                </g>
+              );
+            })}
+            <text
+              x={GUTTER + 4}
+              y={memTop + 10}
+              className="fill-muted-foreground stroke-card text-[10px] font-medium"
+              strokeWidth={3}
+              paintOrder="stroke"
+            >
+              {hasMemory ? "Memory used" : "Memory used · no readings in this range yet"}
             </text>
             {points.map((point) =>
               point.thermal === null ? null : (
@@ -244,13 +303,7 @@ export function TimelineChart({
               const anchor = tx - GUTTER < 16 ? "start" : GUTTER + plotW - tx < 16 ? "end" : "middle";
               return (
                 <g key={tick.at}>
-                  <line
-                    x1={tx}
-                    x2={tx}
-                    y1={plotH + STRIP_GAP + STRIP_H}
-                    y2={plotH + STRIP_GAP + STRIP_H + 3}
-                    className="stroke-border"
-                  />
+                  <line x1={tx} x2={tx} y1={memBottom} y2={memBottom + 3} className="stroke-border" />
                   <text
                     x={tx}
                     y={height - 4}
@@ -265,15 +318,12 @@ export function TimelineChart({
 
             {hovered === null ? null : (
               <g>
-                <line
-                  x1={hoverX}
-                  x2={hoverX}
-                  y1={0}
-                  y2={plotH + STRIP_GAP + STRIP_H}
-                  className="stroke-foreground opacity-40"
-                />
+                <line x1={hoverX} x2={hoverX} y1={0} y2={memBottom} className="stroke-foreground opacity-40" />
                 {hovered.cpu === null ? null : (
                   <circle cx={hoverX} cy={y(hovered.cpu)} r={4} strokeWidth={2} className="fill-primary stroke-card" />
+                )}
+                {hovered.mem === null ? null : (
+                  <circle cx={hoverX} cy={yMem(hovered.mem)} r={4} strokeWidth={2} className="fill-primary stroke-card" />
                 )}
               </g>
             )}
@@ -291,6 +341,7 @@ export function TimelineChart({
             <div className="text-muted-foreground">
               {dayClockText(hovered.at, Date.now())}–{clockText(hovered.at + bucketMs)}
             </div>
+            {hovered.mem === null ? null : <div className="tabular-nums">{pct(hovered.mem)} memory</div>}
             {hovered.thermal === null ? null : (
               <div className="text-muted-foreground">Heat: {thermalLabel(hovered.thermal)}</div>
             )}
