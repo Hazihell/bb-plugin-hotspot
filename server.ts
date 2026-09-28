@@ -70,12 +70,18 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Test seams; BB's host calls the factory with `bb` alone. */
-export interface PluginDeps {
+/** What tests may inject into createHotspot. */
+export interface HotspotDeps {
   takeSample?: (at: number) => Promise<Sample>;
 }
 
-export default async function plugin(bb: BbPluginApi, deps: PluginDeps = {}) {
+/** BB's entry point: the plugin with its real sampler. */
+export default function plugin(bb: BbPluginApi): Promise<void> {
+  return createHotspot(bb);
+}
+
+/** The plugin, with the sampler injectable so tests can control its timing. */
+export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Promise<void> {
   const settings = bb.settings.define({
     sampleIntervalSeconds: {
       type: "number",

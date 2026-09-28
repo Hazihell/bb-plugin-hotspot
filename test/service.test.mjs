@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import plugin from "../server.ts";
+import { createHotspot } from "../server.ts";
 import { startupDelay } from "../lib/sample.ts";
 import { createStore } from "../lib/store.ts";
 
@@ -18,7 +18,7 @@ test("startupDelay waits out the rest of the interval after a recent sample", ()
 test("a restarted service does not sample while the last sample is younger than one interval", async () => {
   let calls = 0;
   const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
-  await plugin(bb, {
+  await createHotspot(bb, {
     takeSample: async (at) => {
       calls += 1;
       return sample(at);
@@ -35,7 +35,7 @@ test("a restarted service does not sample while the last sample is younger than 
 test("a sample that finishes after the service stopped is not written", async () => {
   let release;
   const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
-  await plugin(bb, {
+  await createHotspot(bb, {
     takeSample: (at) => new Promise((resolve) => (release = () => resolve(sample(at)))),
   });
   const service = harness.runService("sampler");
