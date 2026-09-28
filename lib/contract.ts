@@ -9,6 +9,9 @@ import { z } from "zod";
 import { episodeViewSchema, sampleViewSchema, timelinePointSchema } from "./schemas";
 
 export const RANGES = ["24h", "7d"] as const;
+/** The sparklines' window: one hour in 30 two-minute buckets. */
+export const RECENT_MS = 60 * 60_000;
+export const RECENT_BUCKETS = 30;
 export type Range = (typeof RANGES)[number];
 
 /** A BB thread id; anything else from the frontend is refused before it reaches the SDK. */
@@ -51,6 +54,8 @@ export const rpcContract = defineRpcContract({
     output: z.object({
       latest: sampleViewSchema.nullable(),
       open: episodeViewSchema.nullable(),
+      /** The last hour in RECENT_BUCKETS equal buckets, oldest first, for the metric sparklines. */
+      recent: z.array(timelinePointSchema),
       cpuThreshold: z.number(),
       sampleIntervalSeconds: z.number(),
     }),

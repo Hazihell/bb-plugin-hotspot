@@ -1,7 +1,8 @@
 /**
- * One reading of the machine: heat, load, and who is using the CPU.
+ * One reading of the machine: heat, CPU, memory, load, and who is using them.
  *
- * A sample costs one `ps` and one `notifyutil`. Machine-wide CPU comes from
+ * A sample costs one `ps`, one `notifyutil` and one memory read (`vm_stat`
+ * and `sysctl` in one shell), all in parallel. Machine-wide CPU comes from
  * the kernel's per-core tick counters (`os.cpus()`), which are exact over the
  * interval; per-process CPU comes from `ps`, which is only used for ranking.
  */
@@ -15,7 +16,8 @@ import {
   systemProcessSource,
   topUnattributed,
 } from "./procs";
-import type { Sample } from "./schemas";
+import { type MemorySource, readMemory, systemMemorySource } from "./memory";
+import type { Memory, Sample } from "./schemas";
 import { readThermal } from "./thermal";
 
 export const TOP_THREADS = 5;
@@ -60,8 +62,11 @@ const loadPerCore = (cores: number) => Math.round((os.loadavg()[0] / cores) * 10
 export interface SamplerOptions {
   processes?: ProcessSource;
   thermal?: () => Promise<number | null>;
+  memory?: MemorySource;
   /** Told when `ps` fails; the sample is still taken, without processes. */
   onProcessError?: (error: unknown) => void;
+  /** Told when memory cannot be read; the sample is still taken, without memory. */
+  onMemoryError?: (error: unknown) => void;
 }
 
 /** Less than this much CPU time per core since the last reading is too noisy to trust. */
@@ -70,16 +75,21 @@ const MIN_TICK_MS_PER_CORE = 1_000;
 export function createSampler(options: SamplerOptions = {}) {
   const source = options.processes ?? systemProcessSource;
   const thermalReader = options.thermal ?? readThermal;
+  const memorySource = options.memory ?? systemMemorySource;
   const cores = Math.max(1, os.cpus().length);
   let previousTicks: CpuTicks = readTicks();
 
   return async function takeSample(now = Date.now()): Promise<Sample> {
-    const [rows, thermal] = await Promise.all([
+    const [rows, thermal, memory] = await Promise.all([
       readProcesses(source).catch((error: unknown): ProcessRow[] | null => {
         options.onProcessError?.(error);
         return null;
       }),
       thermalReader(),
+      readMemory(memorySource).catch((error: unknown): Memory | null => {
+        options.onMemoryError?.(error);
+        return null;
+      }),
     ]);
     const ticks = readTicks();
     const kernelCpu = cpuBetween(previousTicks, ticks);
@@ -91,7 +101,7 @@ export function createSampler(options: SamplerOptions = {}) {
       rows === null ? null : clampPercent(rows.reduce((sum, row) => sum + row.cpuPercent, 0) / cores);
     const cpu = (enoughTicks ? kernelCpu : (psCpu ?? kernelCpu)) ?? 0;
     if (rows === null) {
-      return { at: now, thermal, cpu, load: loadPerCore(cores), threads: [], procs: [] };
+      return { at: now, thermal, cpu, load: loadPerCore(cores), memory, threads: [], procs: [] };
     }
 
     const attribution = attributeThreads(rows);
@@ -103,10 +113,12 @@ export function createSampler(options: SamplerOptions = {}) {
       thermal,
       cpu,
       load: loadPerCore(cores),
+      memory,
       threads: threads.map((entry) => ({
         threadId: entry.threadId,
         cpu: round(entry.cpuPercent / cores),
         processes: entry.processCount,
+        memBytes: entry.rssBytes,
       })),
       procs: topUnattributed(rows, attribution, TOP_PROCESSES).map((row) => ({
         pid: row.pid,

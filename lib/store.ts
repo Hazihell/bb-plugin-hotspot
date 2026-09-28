@@ -8,10 +8,13 @@
  * host, so the plugin ships no native module of its own.
  */
 import type Database from "better-sqlite3";
-import type { z } from "zod";
+import { z } from "zod";
 import { type DetectorState, type Episode, type Sample, episodeSchema, sampleSchema } from "./schemas";
 
-const readingSchema = sampleSchema.pick({ at: true, cpu: true, thermal: true });
+/** The columns the timeline reads; `mem` is null in rows from before memory was sampled. */
+const readingSchema = sampleSchema
+  .pick({ at: true, cpu: true, thermal: true, load: true })
+  .extend({ mem: z.number().nullable() });
 export type Reading = z.infer<typeof readingSchema>;
 
 type Db = Database.Database;
@@ -39,6 +42,10 @@ export const MIGRATIONS = [
    )`,
   `CREATE INDEX episodes_start_at ON episodes (start_at)`,
   `CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  // Memory: the used % as its own column for cheap timeline reads, and the
+  // full reading as JSON. Older rows keep NULL in both.
+  `ALTER TABLE samples ADD COLUMN mem REAL`,
+  `ALTER TABLE samples ADD COLUMN memory TEXT`,
 ];
 
 export const DAY_MS = 86_400_000;
@@ -49,6 +56,7 @@ interface SampleRow {
   thermal: number | null;
   cpu: number;
   load: number;
+  memory: string | null;
   threads: string;
   procs: string;
 }
@@ -72,6 +80,7 @@ function toSample(row: SampleRow): Sample | null {
     thermal: row.thermal,
     cpu: row.cpu,
     load: row.load,
+    memory: row.memory === null ? null : JSON.parse(row.memory),
     threads: JSON.parse(row.threads),
     procs: JSON.parse(row.procs),
   }));
@@ -120,16 +129,16 @@ function episodeParams(episode: Episode) {
 
 export function createStore(db: Db) {
   const insertSample = db.prepare(
-    `INSERT OR REPLACE INTO samples (at, thermal, cpu, load, threads, procs)
-     VALUES (@at, @thermal, @cpu, @load, @threads, @procs)`,
+    `INSERT OR REPLACE INTO samples (at, thermal, cpu, load, mem, memory, threads, procs)
+     VALUES (@at, @thermal, @cpu, @load, @mem, @memory, @threads, @procs)`,
   );
   const selectSamples = db.prepare(
     `SELECT * FROM samples WHERE at >= ? AND at <= ? ORDER BY at`,
   );
-  // The timeline only needs these three columns; skipping the thread and
-  // process JSON keeps a 7-day read cheap.
+  // The timeline only needs these columns; skipping the thread, process and
+  // memory JSON keeps a 7-day read cheap.
   const selectReadings = db.prepare(
-    `SELECT at, cpu, thermal FROM samples WHERE at >= ? AND at <= ? ORDER BY at`,
+    `SELECT at, cpu, thermal, load, mem FROM samples WHERE at >= ? AND at <= ? ORDER BY at`,
   );
   const selectLatestAt = db.prepare(`SELECT MAX(at) AS at FROM samples`);
   const selectLatest = db.prepare(`SELECT * FROM samples ORDER BY at DESC LIMIT 10`);
@@ -167,7 +176,12 @@ export function createStore(db: Db) {
 
   function addSample(sample: Sample): void {
     insertSample.run({
-      ...sample,
+      at: sample.at,
+      thermal: sample.thermal,
+      cpu: sample.cpu,
+      load: sample.load,
+      mem: sample.memory?.percent ?? null,
+      memory: sample.memory === null ? null : JSON.stringify(sample.memory),
       threads: JSON.stringify(sample.threads),
       procs: JSON.stringify(sample.procs),
     });
@@ -227,7 +241,7 @@ export function createStore(db: Db) {
     samples(from: number, to: number): Sample[] {
       return (selectSamples.all(from, to) as SampleRow[]).map(toSample).filter(present);
     },
-    /** Time, CPU and thermal level only, for the timeline. */
+    /** Time, CPU, thermal level, load and memory % only, for the timeline. */
     readings(from: number, to: number): Reading[] {
       return (selectReadings.all(from, to) as unknown[])
         .map((row) => parseRow(readingSchema, () => row))

@@ -62,7 +62,7 @@ function runTool(harness, params) {
 test("the plugin loads in the fake host with one sampler service", async () => {
   const { harness } = await loadWithEpisode();
   assert.deepEqual(harness.registrations.services.map((entry) => entry.name), ["sampler"]);
-  assert.equal(MIGRATIONS.length, 4);
+  assert.equal(MIGRATIONS.length, 6);
 });
 
 test("hotspot_history names the culprit thread for a window", async () => {
@@ -71,7 +71,8 @@ test("hotspot_history names the culprit thread for a window", async () => {
   assert.match(text, /peak thermal heavy, peak CPU 94%/);
   assert.match(text, /1\. Run the e2e suite \(thr_hotthread1\)\s+avg 45%/);
   assert.match(text, /Window:\n1 samples: CPU avg 94%/);
-  assert.match(text, /  1\. Run the e2e suite \(thr_hotthread1\)  avg 70%/);
+  assert.match(text, /  1\. Run the e2e suite \(thr_hotthread1\)  CPU avg 70%/);
+  assert.match(text, /Memory: not recorded in this window/);
   assert.doesNotMatch(text, /thr_aaaaaaaaaa|Stale/);
   assert.ok(text.length <= 8_000);
 });

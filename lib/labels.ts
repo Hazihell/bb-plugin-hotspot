@@ -8,3 +8,11 @@ export function thermalLabel(level: number | null): string {
   if (level === null) return "unknown";
   return THERMAL_LABELS[level] ?? `level ${level}`;
 }
+
+/** `640 MB`, `1.2 GB`, `16 GB`: binary units, one decimal under 10 GB. */
+export function bytesText(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 9.95) return `${Math.round(gb)} GB`;
+  if (gb >= 0.995) return `${gb.toFixed(1)} GB`;
+  return `${Math.max(0, Math.round(bytes / 1024 ** 2))} MB`;
+}

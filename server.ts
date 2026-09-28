@@ -1,11 +1,12 @@
 // bb-plugin-hotspot — records when the Mac runs hot and which BB thread
 // caused it.
 //
-// A background service samples heat, CPU and the busiest threads on a timer
+// A background service samples heat, CPU, memory and the busiest threads on a timer
 // and stores every sample in the plugin's SQLite database. Each sample also
 // feeds the episode detector (lib/episodes.ts), which opens, extends and
 // closes stored hot episodes and ranks their culprit threads. The sampler reads
-// the server's own machine: `ps`, `notifyutil` and `os`, never a remote host.
+// the server's own machine: `ps`, `notifyutil`, `vm_stat`, `sysctl` and `os`,
+// never a remote host.
 // Sampling only reads. The one thing that signals a process is the user's own
 // "kill this thread's processes" (lib/kill.ts), from the footer popover or
 // `bb hotspot kill`; it is never offered to agents, and neither is stopping a
@@ -14,7 +15,15 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { PluginCliError, cliCommand, defineCli, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { type KillPlanView, type KillResultView, type Range, rpcContract, threadIdSchema } from "./lib/contract";
+import {
+  type KillPlanView,
+  type KillResultView,
+  type Range,
+  RECENT_BUCKETS,
+  RECENT_MS,
+  rpcContract,
+  threadIdSchema,
+} from "./lib/contract";
 import { type KillPlan, type KillRow, type PlanContext, type Signal, applyKill, checkInteractiveCaller, planKill, readKillRows } from "./lib/kill";
 import { systemProcessSource } from "./lib/procs";
 import { type DetectorState, type Episode, restoreState, step } from "./lib/episodes";
@@ -181,12 +190,18 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
   }
 
   let processErrorLogged = false;
+  let memoryErrorLogged = false;
   const takeSample = deps.takeSample ?? createSampler({
     // Logged once per load: a missing `ps` fails every sample the same way.
     onProcessError(error) {
       if (processErrorLogged) return;
       processErrorLogged = true;
       bb.log.warn(`ps failed; recording CPU without threads: ${error instanceof Error ? error.message : String(error)}`);
+    },
+    onMemoryError(error) {
+      if (memoryErrorLogged) return;
+      memoryErrorLogged = true;
+      bb.log.warn(`memory read failed; recording without memory: ${error instanceof Error ? error.message : String(error)}`);
     },
   });
 
@@ -229,6 +244,7 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
       at: sample.at,
       thermal: sample.thermal,
       cpu: sample.cpu,
+      mem: sample.memory?.percent ?? null,
       hot: open !== null,
     });
   }
@@ -371,9 +387,11 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
     async status() {
       const { cpuThreshold, sampleIntervalSeconds } = await settings.get();
       const [open] = detector.open === null ? [null] : await viewEpisodes([detector.open], CULPRITS_SHOWN);
+      const now = Date.now();
       return {
         latest: await viewLatest(),
         open,
+        recent: bucketSamples(store.readings(now - RECENT_MS, now), now - RECENT_MS, now, RECENT_BUCKETS).points,
         cpuThreshold,
         sampleIntervalSeconds,
       };
@@ -445,10 +463,11 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
   bb.agents.registerTool({
     name: "hotspot_history",
     description:
-      "Why was the Mac hot, and which BB thread caused it? Returns recorded hot episodes " +
+      "Why was the Mac hot or slow, and which BB thread caused it? Returns recorded hot episodes " +
       "(thermal pressure above nominal or sustained high CPU) overlapping a time window, each " +
-      "with its culprit threads ranked by CPU, plus a summary of CPU, thermal level and the " +
-      "busiest threads across the whole window. Read-only; output is bounded.",
+      "with its culprit threads ranked by CPU, plus a summary of CPU, memory used, swap, memory " +
+      "pressure, thermal level and the busiest threads (CPU and peak memory) across the whole " +
+      "window. Read-only; output is bounded.",
     instructions:
       "When the user asks why their Mac was hot, loud or slow at some time, call hotspot_history " +
       "with a window around that time (e.g. since \"15:00\", until \"16:00\") before guessing.",
@@ -513,7 +532,7 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
           },
         }),
         status: cliCommand({
-          summary: "Latest sample: thermal level, CPU, load, busiest threads and processes",
+          summary: "Latest sample: thermal level, CPU, memory, load, busiest threads and processes",
           options: { json: { type: "boolean", description: "Emit JSON" } },
           async run(input) {
             const latest = await viewLatest();

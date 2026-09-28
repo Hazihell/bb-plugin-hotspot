@@ -4,15 +4,22 @@ import { DARWIN_PS, PORTABLE_PS, attributeThreads, groupByThread, readProcesses 
 import { createSampler } from "../lib/sample.ts";
 
 const LINUX_PS = [
-  "    1     0  0.0 /sbin/init",
-  "  200     1 12.5 /usr/bin/node /home/me/.local/bin/claude --verbose",
-  "  300   200 80.0 node /repo/node_modules/.bin/tsc PWD=/not/env",
-  "  400     1  9.0 node /home/me/.bb/worktrees/thr_bbbbbbbbbb-2/app/server.js",
-  "  500     1 30.0 grep thr_cccccccccc",
+  "    1     0  0.0  1000 /sbin/init",
+  "  200     1 12.5  1000 /usr/bin/node /home/me/.local/bin/claude --verbose",
+  "  300   200 80.0  1000 node /repo/node_modules/.bin/tsc PWD=/not/env",
+  "  400     1  9.0  1000 node /home/me/.bb/worktrees/thr_bbbbbbbbbb-2/app/server.js",
+  "  500     1 30.0  1000 grep thr_cccccccccc",
 ].join("\n");
 
 const ENVIRONS = {
   200: "HOME=/home/me\0PWD=/home/me/.bb/workspaces/thr_dddddddddd\0BB_THREAD_ID=thr_aaaaaaaaaa\0",
+};
+
+/** Memory is read from a fixed /proc/meminfo, so no test depends on the host. */
+const linuxMemory = {
+  platform: "linux",
+  exec: async () => "",
+  readFile: async () => "MemTotal: 1000000 kB\nMemAvailable: 400000 kB",
 };
 
 function linuxSource(overrides = {}) {
@@ -62,6 +69,7 @@ test("when ps fails, a sample is still stored with kernel CPU and no threads", a
   const takeSample = createSampler({
     processes: source,
     thermal: async () => null,
+    memory: linuxMemory,
     onProcessError: (error) => errors.push(error.message),
   });
   const sample = await takeSample(123);
@@ -75,8 +83,10 @@ test("when ps fails, a sample is still stored with kernel CPU and no threads", a
 
 test("a Linux sample ranks threads found through /proc", async () => {
   const { source } = linuxSource();
-  const takeSample = createSampler({ processes: source, thermal: async () => null });
+  const takeSample = createSampler({ processes: source, thermal: async () => null, memory: linuxMemory });
   const sample = await takeSample(1);
+  assert.equal(sample.memory?.percent, 60);
+  assert.deepEqual(sample.threads.map((entry) => entry.memBytes), [2 * 1000 * 1024, 1000 * 1024]);
   assert.deepEqual(sample.threads.map((entry) => entry.threadId), ["thr_aaaaaaaaaa", "thr_bbbbbbbbbb"]);
   assert.deepEqual(sample.procs.map((entry) => entry.pid), [500]);
 });

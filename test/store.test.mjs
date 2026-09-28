@@ -10,15 +10,26 @@ function openStore() {
 }
 
 function sample(at, extra = {}) {
-  return { at, thermal: 0, cpu: 10, load: 0.2, threads: [], procs: [], ...extra };
+  return { at, thermal: 0, cpu: 10, load: 0.2, memory: null, threads: [], procs: [], ...extra };
 }
+
+const MEMORY = {
+  percent: 76.2,
+  totalBytes: 16 * 1024 ** 3,
+  usedBytes: 12.2 * 1024 ** 3,
+  appBytes: 5 * 1024 ** 3,
+  wiredBytes: 3 * 1024 ** 3,
+  compressedBytes: 4.2 * 1024 ** 3,
+  swapUsedBytes: 1024 ** 3,
+  pressure: "normal",
+};
 
 test("samples round-trip with their thread lists", () => {
   const store = openStore();
-  const threads = [{ threadId: "thr_aaaaaaaaaa", cpu: 90, processes: 3 }];
-  store.addSample(sample(1_000, { threads, thermal: null }));
+  const threads = [{ threadId: "thr_aaaaaaaaaa", cpu: 90, processes: 3, memBytes: 512 * 1024 ** 2 }];
+  store.addSample(sample(1_000, { threads, thermal: null, memory: MEMORY }));
   store.addSample(sample(2_000));
-  assert.deepEqual(store.samples(0, 1_500), [sample(1_000, { threads, thermal: null })]);
+  assert.deepEqual(store.samples(0, 1_500), [sample(1_000, { threads, thermal: null, memory: MEMORY })]);
   assert.equal(store.latest()?.at, 2_000);
 });
 
@@ -61,17 +72,38 @@ test("a title stored by an older build is stripped when the row is read", () => 
   store.addSample(
     sample(1_000, { threads: [{ threadId: "thr_aaaaaaaaaa", title: "Old title", cpu: 9, processes: 1 }] }),
   );
-  assert.deepEqual(store.latest().threads, [{ threadId: "thr_aaaaaaaaaa", cpu: 9, processes: 1 }]);
+  assert.deepEqual(store.latest().threads, [{ threadId: "thr_aaaaaaaaaa", cpu: 9, processes: 1, memBytes: null }]);
 });
 
-test("readings carry only time, CPU and thermal level", () => {
+test("readings carry only time, CPU, thermal level, load and memory %", () => {
   const store = openStore();
-  store.addSample(sample(1_000, { threads: [{ threadId: "thr_aaaaaaaaaa", cpu: 9, processes: 1 }] }));
+  store.addSample(sample(1_000, { threads: [{ threadId: "thr_aaaaaaaaaa", cpu: 9, processes: 1 }], memory: MEMORY }));
   store.addSample(sample(2_000, { thermal: null, cpu: 55 }));
   assert.deepEqual(store.readings(0, 5_000), [
-    { at: 1_000, cpu: 10, thermal: 0 },
-    { at: 2_000, cpu: 55, thermal: null },
+    { at: 1_000, cpu: 10, thermal: 0, load: 0.2, mem: 76.2 },
+    { at: 2_000, cpu: 55, thermal: null, load: 0.2, mem: null },
   ]);
+});
+
+test("the memory migration keeps rows stored before it, which read back without memory", () => {
+  const db = new Database(":memory:");
+  for (const statement of MIGRATIONS.slice(0, 4)) db.exec(statement);
+  db.prepare(
+    `INSERT INTO samples (at, thermal, cpu, load, threads, procs)
+     VALUES (1000, 1, 42, 0.5, '[{"threadId":"thr_aaaaaaaaaa","cpu":30,"processes":2}]', '[]')`,
+  ).run();
+  for (const statement of MIGRATIONS.slice(4)) db.exec(statement);
+  const store = createStore(db);
+  assert.deepEqual(store.latest(), {
+    at: 1000,
+    thermal: 1,
+    cpu: 42,
+    load: 0.5,
+    memory: null,
+    threads: [{ threadId: "thr_aaaaaaaaaa", cpu: 30, processes: 2, memBytes: null }],
+    procs: [],
+  });
+  assert.deepEqual(store.readings(0, 5_000), [{ at: 1000, cpu: 42, thermal: 1, load: 0.5, mem: null }]);
 });
 
 test("closeStrayEpisodes ends every open episode but the detector's own", () => {

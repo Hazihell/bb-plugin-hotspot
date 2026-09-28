@@ -1,19 +1,20 @@
 /**
  * Read-side shaping shared by the page, the CLI and the agent tool.
  */
-import { thermalLabel } from "./labels";
+import { bytesText, thermalLabel } from "./labels";
 import type { KillPlanView, KillResultView } from "./contract";
-import type { EpisodeView, Sample, SampleView, TimelinePoint } from "./schemas";
+import type { EpisodeView, Memory, Sample, SampleView, TimelinePoint } from "./schemas";
 
 /**
  * Fold samples into `count` equal buckets over [from, to).
  *
- * Each bucket keeps its *highest* CPU and thermal level, so a one-minute
- * spike is still visible on a seven-day chart. Buckets with no sample stay
- * null and draw as gaps, which is how the chart shows the Mac was asleep.
+ * Each bucket keeps its *highest* CPU, memory, load and thermal level, so a
+ * one-minute spike is still visible on a seven-day chart. Buckets with no
+ * sample stay null and draw as gaps, which is how the chart shows the Mac
+ * was asleep.
  */
 export function bucketSamples(
-  samples: ReadonlyArray<Pick<Sample, "at" | "cpu" | "thermal">>,
+  samples: ReadonlyArray<Pick<Sample, "at" | "cpu" | "thermal" | "load"> & { mem: number | null }>,
   from: number,
   to: number,
   count: number,
@@ -23,12 +24,16 @@ export function bucketSamples(
     at: from + index * bucketMs,
     cpu: null,
     thermal: null,
+    mem: null,
+    load: null,
   }));
   for (const sample of samples) {
     const index = Math.floor((sample.at - from) / bucketMs);
     const point = points[index];
     if (point === undefined) continue;
     point.cpu = Math.max(point.cpu ?? 0, sample.cpu);
+    point.load = Math.max(point.load ?? 0, sample.load);
+    if (sample.mem !== null) point.mem = Math.max(point.mem ?? 0, sample.mem);
     if (sample.thermal !== null) point.thermal = Math.max(point.thermal ?? 0, sample.thermal);
   }
   return { bucketMs, points };
@@ -87,13 +92,29 @@ const pct = (value: number) => `${Math.round(value)}%`;
 const threadName = (entry: { threadId: string; title: string | null }) =>
   entry.title === null ? entry.threadId : `${entry.title} (${entry.threadId})`;
 
+/** `memory 76% used (12.9 of 16 GB: app 5.2 GB, …), swap 5.7 GB, pressure normal`. */
+export function describeMemory(memory: Memory): string {
+  const parts = [
+    `app ${bytesText(memory.appBytes)}`,
+    `wired ${bytesText(memory.wiredBytes)}`,
+    `compressed ${bytesText(memory.compressedBytes)}`,
+  ];
+  return (
+    `memory ${pct(memory.percent)} used (${bytesText(memory.usedBytes)} of ${bytesText(memory.totalBytes)}: ${parts.join(", ")}), ` +
+    `swap ${bytesText(memory.swapUsedBytes)}, pressure ${memory.pressure ?? "unknown"}`
+  );
+}
+
+const memCell = (bytes: number | null) => (bytes === null ? "" : `  ${bytesText(bytes).padStart(6)}`);
+
 export function describeSample(sample: SampleView): string[] {
   const lines = [
     `${formatWhen(sample.at)}  thermal ${thermalLabel(sample.thermal)}, CPU ${pct(sample.cpu)}, load/core ${sample.load.toFixed(2)}`,
+    sample.memory === null ? "  memory: not read" : `  ${describeMemory(sample.memory)}`,
   ];
   if (sample.threads.length === 0) lines.push("  threads: none using CPU");
   for (const thread of sample.threads) {
-    lines.push(`  thread ${pct(thread.cpu).padStart(4)}  ${threadName(thread)}, ${thread.processes} proc`);
+    lines.push(`  thread ${pct(thread.cpu).padStart(4)}${memCell(thread.memBytes)}  ${threadName(thread)}, ${thread.processes} proc`);
   }
   for (const proc of sample.procs) {
     lines.push(`  other  ${pct(proc.cpu).padStart(4)}  ${proc.name} (pid ${proc.pid})`);
@@ -128,6 +149,8 @@ export interface WindowThread {
   threadId: string;
   avgCpu: number;
   peakCpu: number;
+  /** Highest resident memory seen, in bytes; null when no sample recorded it. */
+  peakMemBytes: number | null;
 }
 
 export interface WindowSummary {
@@ -135,23 +158,45 @@ export interface WindowSummary {
   peakCpu: number;
   avgCpu: number;
   peakThermal: number | null;
+  /** Memory used %, over the samples that read memory; null when none did. */
+  avgMem: number | null;
+  peakMem: number | null;
+  peakSwapBytes: number | null;
+  /** The worst kernel memory pressure seen. */
+  peakPressure: Memory["pressure"];
   /** Every thread seen, by CPU summed over all samples in the window. */
   threads: WindowThread[];
 }
 
+const PRESSURES = ["normal", "warn", "critical"] as const;
+
 export function summarizeWindow(samples: Sample[]): WindowSummary {
-  const threads = new Map<string, { threadId: string; sum: number; peak: number }>();
+  const threads = new Map<string, { threadId: string; sum: number; peak: number; peakMem: number | null }>();
   let peakCpu = 0;
   let cpuSum = 0;
   let peakThermal: number | null = null;
+  let memSum = 0;
+  let memCount = 0;
+  let peakMem: number | null = null;
+  let peakSwapBytes: number | null = null;
+  let pressureRank = -1;
   for (const sample of samples) {
     peakCpu = Math.max(peakCpu, sample.cpu);
     cpuSum += sample.cpu;
     if (sample.thermal !== null) peakThermal = Math.max(peakThermal ?? 0, sample.thermal);
+    const { memory } = sample;
+    if (memory !== null) {
+      memSum += memory.percent;
+      memCount += 1;
+      peakMem = Math.max(peakMem ?? 0, memory.percent);
+      peakSwapBytes = Math.max(peakSwapBytes ?? 0, memory.swapUsedBytes);
+      pressureRank = Math.max(pressureRank, PRESSURES.indexOf(memory.pressure ?? "normal"));
+    }
     for (const thread of sample.threads) {
-      const entry = threads.get(thread.threadId) ?? { threadId: thread.threadId, sum: 0, peak: 0 };
+      const entry = threads.get(thread.threadId) ?? { threadId: thread.threadId, sum: 0, peak: 0, peakMem: null };
       entry.sum += thread.cpu;
       entry.peak = Math.max(entry.peak, thread.cpu);
+      if (thread.memBytes !== null) entry.peakMem = Math.max(entry.peakMem ?? 0, thread.memBytes);
       threads.set(thread.threadId, entry);
     }
   }
@@ -161,9 +206,18 @@ export function summarizeWindow(samples: Sample[]): WindowSummary {
     peakCpu,
     avgCpu: cpuSum / count,
     peakThermal,
+    avgMem: memCount === 0 ? null : memSum / memCount,
+    peakMem,
+    peakSwapBytes,
+    peakPressure: pressureRank < 0 ? null : PRESSURES[pressureRank],
     threads: [...threads.values()]
       .sort((a, b) => b.sum - a.sum)
-      .map((entry) => ({ threadId: entry.threadId, avgCpu: entry.sum / count, peakCpu: entry.peak })),
+      .map((entry) => ({
+        threadId: entry.threadId,
+        avgCpu: entry.sum / count,
+        peakCpu: entry.peak,
+        peakMemBytes: entry.peakMem,
+      })),
   };
 }
 
@@ -175,9 +229,13 @@ export function describeWindow(
   if (summary.samples === 0) return ["No samples in this window (the Mac was asleep or Hotspot was off)."];
   const lines = [
     `${summary.samples} samples: CPU avg ${pct(summary.avgCpu)}, peak ${pct(summary.peakCpu)}; peak thermal ${thermalLabel(summary.peakThermal)}`,
+    summary.avgMem === null || summary.peakMem === null
+      ? "Memory: not recorded in this window"
+      : `Memory used avg ${pct(summary.avgMem)}, peak ${pct(summary.peakMem)}; peak swap ${bytesText(summary.peakSwapBytes ?? 0)}; worst pressure ${summary.peakPressure ?? "unknown"}`,
   ];
   for (const [index, thread] of threads.entries()) {
-    lines.push(`  ${index + 1}. ${threadName(thread)}  avg ${pct(thread.avgCpu)}, peak ${pct(thread.peakCpu)}`);
+    const mem = thread.peakMemBytes === null ? "" : `, peak memory ${bytesText(thread.peakMemBytes)}`;
+    lines.push(`  ${index + 1}. ${threadName(thread)}  CPU avg ${pct(thread.avgCpu)}, peak ${pct(thread.peakCpu)}${mem}`);
   }
   return lines;
 }

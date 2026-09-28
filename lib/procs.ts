@@ -7,7 +7,7 @@
  *
  * Changes from the original: memory classification, kill-candidate rules and
  * byte formatting are gone (the sampler never touches a process; the kill
- * rules live in lib/kill.ts). `ps` also
+ * rules live in lib/kill.ts; resident memory is only summed per thread). `ps` also
  * prints each process's environment (`-E`), because BB exports
  * `BB_THREAD_ID` to every agent it launches and almost nothing else carries
  * the id. A bare `thr_…` anywhere in argv no longer counts, only a worktree
@@ -42,8 +42,10 @@ export const systemProcessSource: ProcessSource = {
   },
 };
 
-export const DARWIN_PS = "ps -axE -o pid=,ppid=,pcpu=,command=";
-export const PORTABLE_PS = "ps -eo pid=,ppid=,pcpu=,args=";
+export const DARWIN_PS = "ps -axE -o pid=,ppid=,pcpu=,rss=,command=";
+export const PORTABLE_PS = "ps -eo pid=,ppid=,pcpu=,rss=,args=";
+/** pid, ppid, pcpu, rss (KiB), then the command line. */
+const PS_LINE = /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(.*)$/;
 
 export interface ProcessRow {
   pid: number;
@@ -53,6 +55,8 @@ export interface ProcessRow {
    * minute, not an instantaneous reading, and one busy core is 100.
    */
   cpuPercent: number;
+  /** Resident set size in bytes. Shared pages count in every process that maps them. */
+  rssBytes: number;
   name: string;
   /** The thread named by this process itself (environment or argv). */
   threadId: string | null;
@@ -61,6 +65,8 @@ export interface ProcessRow {
 export interface ThreadCpu {
   threadId: string;
   cpuPercent: number;
+  /** Resident memory summed over the thread's processes, in bytes. */
+  rssBytes: number;
   processCount: number;
 }
 
@@ -119,15 +125,16 @@ export function parseThreadId(command: string): string | null {
   return threadIdFrom(argv, env);
 }
 
-/** One line of `ps -axE -o pid=,ppid=,pcpu=,command=`. */
+/** One line of `ps -axE -o pid=,ppid=,pcpu=,rss=,command=`. */
 export function parsePsLine(line: string): ProcessRow | null {
-  const match = /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(.*)$/.exec(line);
+  const match = PS_LINE.exec(line);
   if (match === null) return null;
-  const command = match[4];
+  const command = match[5];
   return {
     pid: Number(match[1]),
     ppid: Number(match[2]),
     cpuPercent: Number(match[3]),
+    rssBytes: Number(match[4]) * 1024,
     name: processName(command),
     threadId: parseThreadId(command),
   };
@@ -156,23 +163,27 @@ export async function readProcesses(
   const stdout = await source.exec(PORTABLE_PS);
   const lines = stdout
     .split("\n")
-    .map((line) => /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(.*)$/.exec(line))
+    .map((line) => PS_LINE.exec(line))
     .filter((match): match is RegExpExecArray => match !== null);
   return Promise.all(
     lines.map(async (match) => {
       const pid = Number(match[1]);
-      const argv = match[4];
+      const argv = match[5];
       const env = (await source.readEnviron(pid)) ?? "";
       return {
         pid,
         ppid: Number(match[2]),
         cpuPercent: Number(match[3]),
+        rssBytes: Number(match[4]) * 1024,
         name: processName(argv),
         threadId: threadIdFrom(argv, env),
       };
     }),
   );
 }
+
+/** What thread attribution reads from a row. */
+type AttributableRow = Pick<ProcessRow, "pid" | "ppid" | "threadId">;
 
 /**
  * The thread each process belongs to: its own, else its nearest ancestor's.
@@ -181,15 +192,15 @@ export async function readProcesses(
  * the test runner was started with a relative path and an environment that
  * dropped `BB_THREAD_ID`.
  */
-export function attributeThreads(rows: ProcessRow[]): Map<number, string | null> {
-  const byPid = new Map<number, ProcessRow>();
+export function attributeThreads(rows: AttributableRow[]): Map<number, string | null> {
+  const byPid = new Map<number, AttributableRow>();
   for (const row of rows) byPid.set(row.pid, row);
   const resolved = new Map<number, string | null>();
-  const resolve = (row: ProcessRow): string | null => {
+  const resolve = (row: AttributableRow): string | null => {
     const known = resolved.get(row.pid);
     if (known !== undefined) return known;
-    const chain: ProcessRow[] = [];
-    let current: ProcessRow | undefined = row;
+    const chain: AttributableRow[] = [];
+    let current: AttributableRow | undefined = row;
     let threadId: string | null = null;
     const seen = new Set<number>();
     while (current !== undefined && current.pid > 1 && !seen.has(current.pid)) {
@@ -225,8 +236,9 @@ export function groupByThread(
   for (const row of rows) {
     const threadId = attribution.get(row.pid) ?? null;
     if (threadId === null) continue;
-    const entry = byThread.get(threadId) ?? { threadId, cpuPercent: 0, processCount: 0 };
+    const entry = byThread.get(threadId) ?? { threadId, cpuPercent: 0, rssBytes: 0, processCount: 0 };
     entry.cpuPercent += row.cpuPercent;
+    entry.rssBytes += row.rssBytes;
     entry.processCount += 1;
     byThread.set(threadId, entry);
   }

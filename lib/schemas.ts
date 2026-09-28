@@ -14,6 +14,8 @@ export const threadEntrySchema = z.object({
   /** Share of the whole machine, 0–100 (not per-core `ps` percent). */
   cpu: z.number(),
   processes: z.number(),
+  /** Resident memory summed over the thread's processes, in bytes; null in rows from older builds. */
+  memBytes: z.number().nullable().default(null),
 });
 
 export const processEntrySchema = z.object({
@@ -21,6 +23,20 @@ export const processEntrySchema = z.object({
   name: z.string(),
   /** Share of the whole machine, 0–100. */
   cpu: z.number(),
+});
+
+/** Physical memory at one reading (lib/memory.ts). */
+export const memorySchema = z.object({
+  /** Used (app + wired + compressed) as a share of physical memory, 0–100. */
+  percent: z.number(),
+  totalBytes: z.number(),
+  usedBytes: z.number(),
+  appBytes: z.number(),
+  wiredBytes: z.number(),
+  compressedBytes: z.number(),
+  swapUsedBytes: z.number(),
+  /** The kernel's memory pressure level; null where it cannot be read. */
+  pressure: z.enum(["normal", "warn", "critical"]).nullable(),
 });
 
 export const sampleSchema = z.object({
@@ -31,6 +47,8 @@ export const sampleSchema = z.object({
   cpu: z.number(),
   /** One-minute load average divided by core count. */
   load: z.number(),
+  /** Null when memory could not be read, and in rows from older builds. */
+  memory: memorySchema.nullable().default(null),
   threads: z.array(threadEntrySchema),
   procs: z.array(processEntrySchema),
 });
@@ -89,9 +107,14 @@ export const timelinePointSchema = z.object({
   cpu: z.number().nullable(),
   /** Highest thermal level in the bucket, or null when unknown. */
   thermal: z.number().nullable(),
+  /** Highest memory used %, or null when nothing in the bucket read memory. */
+  mem: z.number().nullable(),
+  /** Highest load per core, or null when nothing was sampled. */
+  load: z.number().nullable(),
 });
 
 export type ThreadEntry = z.infer<typeof threadEntrySchema>;
+export type Memory = z.infer<typeof memorySchema>;
 export type ProcessEntry = z.infer<typeof processEntrySchema>;
 export type Sample = z.infer<typeof sampleSchema>;
 export type Culprit = z.infer<typeof culpritSchema>;
