@@ -15,12 +15,14 @@ shows a toast naming the top thread.
 
 While a BB window is on screen, the same service also takes a live reading
 every 2 seconds and pushes it to the footer, the popover and the page's
-numbers. Each open window renews a 10-second watch lease every 4 seconds
-while it is visible; when every lease lapses, only the minute samples run.
+numbers. Each open window renews a 20-second watch lease every 5 seconds
+while it is visible (and a second after a failed renewal); when every lease
+lapses, only the minute samples run.
 Live readings are never stored and never open or close an episode. Thread
 and process CPU is the CPU time each process used since the previous
 reading (`ps` `time`, keyed by pid and start time so a reused pid is not a
-spike), not `ps`'s minute-long decaying `%cpu`, so a stored sample measures
+spike; a process that started inside the window counts all its CPU time),
+not `ps`'s minute-long decaying `%cpu`, so a stored sample measures
 its whole minute and a live one its last 2 seconds. One reading costs about
 30 ms and one `ps`.
 

@@ -141,10 +141,10 @@ Set with `bb plugin config hotspot set <key> <value>`:
 
 - Thread and process CPU is a share of the whole Mac (all cores = 100%):
   the CPU time each process used between two readings, so a stored sample
-  covers its whole interval. A process that started since the previous
-  reading, and every process in the first sample after a load, falls back to
-  `ps` `%cpu`, a decaying average over about a minute. Machine CPU is exact
-  over the interval.
+  covers its whole interval, and a process that started since the previous
+  reading counts all its CPU time. Every process in the first reading after
+  a load, or after a failed `ps`, falls back to `ps` `%cpu`, a decaying
+  average over about a minute. Machine CPU is exact over the interval.
 - Memory used is Activity Monitor's Memory Used (app + wired + compressed)
   over physical memory, read from `vm_stat` and `sysctl`; on Linux it is
   total minus `MemAvailable`, with no pressure level. A thread's memory is
