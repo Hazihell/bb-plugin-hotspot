@@ -6,6 +6,8 @@ import {
   dayClockText,
   durationText,
   episodeNear,
+  gapLabel,
+  labelWidth,
   processSummary,
   threadMeta,
   timeTicks,
@@ -119,4 +121,16 @@ test("episodeNear hits a band, the nearest within tolerance, or nothing", () => 
   assert.equal(episodeNear(episodes, 4_800, 500, 9_000)?.id, 2);
   assert.equal(episodeNear(episodes, 8_000, 0, 9_000)?.id, 2);
   assert.equal(episodeNear(episodes, 3_500, 500, 9_000), null);
+});
+
+test("gap label sits centred in the stretch before the first reading, or not at all", () => {
+  const first = at(28, 13, 31);
+  const text = "No readings before 1:31 PM";
+  assert.deepEqual(gapLabel(36, 382, 300, first, L), { text, x: 168 });
+  // Too narrow for the text plus 8px each side: left out rather than spilling over the data.
+  const tight = 36 + labelWidth(text) + 16;
+  assert.equal(gapLabel(36, 382, tight - 1, first, L), null);
+  assert.equal(gapLabel(36, 382, tight, first, L)?.x, (36 + tight) / 2);
+  // No reading at all: the whole plot is the stretch.
+  assert.deepEqual(gapLabel(36, 382, null, null, L), { text: "No readings yet", x: 209 });
 });

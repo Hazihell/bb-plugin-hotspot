@@ -6,7 +6,7 @@
 import { type KeyboardEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { Timeline } from "../lib/contract";
 import { thermalLabel } from "../lib/labels";
-import { clockText, dayClockText, episodeNear, pct, timeTicks } from "../lib/present";
+import { clockText, dayClockText, episodeNear, gapLabel, pct, timeTicks } from "../lib/present";
 import { cn } from "../lib/utils";
 import { thermalFill, thermalSwatch } from "./heat";
 
@@ -69,6 +69,8 @@ export function TimelineChart({
   }, [points, bucketMs]);
 
   const firstSampled = points.findIndex((point) => point.cpu !== null);
+  const firstX = firstSampled === -1 ? null : x(points[firstSampled].at);
+  const gap = firstSampled === 0 ? null : gapLabel(GUTTER, GUTTER + plotW, firstX, firstSampled === -1 ? null : points[firstSampled].at);
   const ticks = timeTicks(from, to, Math.max(3, Math.floor(plotW / (compact ? 64 : 88))));
   const hovered = hover === null ? null : (points[hover] ?? null);
   const hoveredEpisode =
@@ -172,16 +174,20 @@ export function TimelineChart({
               );
             })}
 
-            {firstSampled > 0 && x(points[firstSampled].at) - GUTTER > 110 ? (
-              <text
-                x={(GUTTER + x(points[firstSampled].at)) / 2}
-                y={plotH / 2}
-                textAnchor="middle"
-                className="fill-muted-foreground text-[11px]"
-              >
-                No readings yet
+            {firstSampled === 0 ? null : (
+              <rect
+                x={GUTTER}
+                width={Math.max(0, (firstX ?? GUTTER + plotW) - GUTTER)}
+                y={0}
+                height={plotH}
+                className="fill-muted-foreground opacity-[0.06]"
+              />
+            )}
+            {gap === null ? null : (
+              <text x={gap.x} y={plotH / 2} textAnchor="middle" className="fill-muted-foreground text-[11px]">
+                {gap.text}
               </text>
-            ) : null}
+            )}
 
             {runs.map((run, index) => {
               const line = run.map(([at, cpu]) => `${x(at).toFixed(1)},${y(cpu).toFixed(1)}`).join(" L");

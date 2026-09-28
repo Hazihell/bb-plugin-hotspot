@@ -157,6 +157,35 @@ export function processSummary(names: readonly string[], max = 4): string {
   return rest > 0 ? [...shown, `${rest} more`].join(" · ") : shown.join(" · ");
 }
 
+export interface GapLabel {
+  text: string;
+  /** Centre of the label, in the same units as the span. */
+  x: number;
+}
+
+/** Rough width of chart label text: 11px system sans averages about 6px a character. */
+export const labelWidth = (text: string, charPx = 6) => text.length * charPx;
+
+/**
+ * The note for the stretch of the chart before the first reading: centred
+ * in that stretch, and left out when the stretch cannot fit it with
+ * `padding` on each side. `firstAt` is null when there is no reading at all,
+ * and the whole plot is the stretch.
+ */
+export function gapLabel(
+  plotStart: number,
+  plotEnd: number,
+  firstX: number | null,
+  firstAt: number | null,
+  locale?: string,
+  padding = 8,
+): GapLabel | null {
+  const end = firstX ?? plotEnd;
+  const text = firstAt === null ? "No readings yet" : `No readings before ${clockText(firstAt, locale)}`;
+  if (end - plotStart < labelWidth(text) + 2 * padding) return null;
+  return { text, x: (plotStart + end) / 2 };
+}
+
 /**
  * The episode under a point on the timeline, or the nearest one within
  * `toleranceMs`, so a short hot spell can be hit with a finger.
