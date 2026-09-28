@@ -1,4 +1,4 @@
-// The heat vocabulary every Hotspot surface shares: the tone dot, the
+// The heat vocabulary every Hotspot surface shares: the tinted flame, the
 // thermal swatch colours, and the verdict block that answers "is it hot,
 // and who is to blame" before anything else. Colours come from the host's
 // status tokens so custom palettes and both themes follow.
@@ -10,11 +10,12 @@ import { clockText, pct, verdict } from "../lib/present";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 
-export const TONE_DOT: Record<FooterTone, string> = {
-  calm: "bg-[var(--success)]",
-  warm: "bg-[var(--warning)]",
-  hot: "bg-destructive",
-  idle: "bg-muted-foreground/40",
+/** The footer flame's colours: grey when calm, so only heat draws the eye. */
+export const TONE_FLAME: Record<FooterTone, string> = {
+  calm: "text-muted-foreground",
+  warm: "text-[var(--warning)]",
+  hot: "text-destructive",
+  idle: "text-muted-foreground/50",
 };
 
 /** Thermal level as a swatch; always shown beside its name. */
@@ -57,10 +58,6 @@ export function FlameIcon({ className }: { className?: string }) {
   );
 }
 
-export function HeatDot({ tone, className }: { tone: FooterTone; className?: string }) {
-  return <span aria-hidden="true" className={cn("inline-block shrink-0 rounded-full", TONE_DOT[tone], className)} />;
-}
-
 /**
  * The first thing on the popover and the page. `size` picks the headline
  * scale; the thread link closes the surrounding overlay through `onNavigate`.
@@ -87,7 +84,7 @@ export function VerdictBlock({
   return (
     <div className="min-w-0" role="status" aria-live="polite">
       <div className="flex items-center gap-2.5">
-        <HeatDot tone={view.tone} className={size === "page" ? "size-3" : "size-2.5"} />
+        <FlameIcon className={cn(TONE_FLAME[view.tone], size === "page" ? "size-5" : "size-4")} />
         <h2
           className={cn(
             "min-w-0 font-semibold text-foreground",
