@@ -218,6 +218,35 @@ test("kill --yes is accepted only from a terminal that no agent runs", () => {
   assert.match(checkInteractiveCaller(rowsOf(table()), THREAD).reason, /could not find/);
 });
 
+test("Codex's commands under sandbox-exec are work; Codex itself is spared", () => {
+  const profile = "(version 1) (deny default) (allow file-read*) (allow process-exec)";
+  const stdout = table({
+    300: line(300, 200, `/opt/homebrew/bin/codex app-server BB_THREAD_ID=${THREAD}`, { cpu: 5 }),
+    301: line(301, 300, `/usr/bin/sandbox-exec -p ${profile} -D WRITABLE_ROOT_0=/Users/me/app -- /bin/zsh -lc npm run dev`),
+    302: line(302, 301, "/bin/zsh -lc npm run dev"),
+    303: line(303, 302, "node /Users/me/app/node_modules/.bin/vite", { cpu: 60 }),
+    304: line(304, 300, "/opt/homebrew/bin/rg --files"),
+    305: line(305, 300, `/usr/bin/sandbox-exec -p ${profile} -- /opt/homebrew/bin/some-mcp-server`),
+    310: null,
+    311: null,
+    312: null,
+    313: null,
+    320: null,
+    321: null,
+    330: null,
+    331: null,
+    340: null,
+    341: null,
+    342: null,
+  });
+  const plan = planKill(rowsOf(stdout), THREAD, context);
+  assert.deepEqual(plan.targets.map((target) => target.pid), [303, 302, 301]);
+  const reasons = Object.fromEntries(plan.excluded.map((entry) => [entry.pid, entry.reason]));
+  assert.match(reasons[300], /agent \(launched by BB\)/);
+  assert.match(reasons[304], /helper/);
+  assert.match(reasons[305], /helper/);
+});
+
 test("a thread with no work of its own plans nothing", () => {
   const plan = planKill(rowsOf(table()), "thr_nothing0001", context);
   assert.deepEqual(plan, { threadId: "thr_nothing0001", targets: [], excluded: [] });

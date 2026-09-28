@@ -178,6 +178,23 @@ function hop(parent: KillRow, child: KillRow): "chain" | "work" | "helper" {
   return "helper";
 }
 
+/**
+ * `sandbox-exec` (Codex runs every command under it) is transparent: it is
+ * judged as the command it wraps, and what it starts is judged against the
+ * agent above it, so a sandboxed work shell is work and the agent is not.
+ */
+export function isTransparentWrapper(row: Pick<KillRow, "argv">): boolean {
+  return executable(row) === "sandbox-exec";
+}
+
+/** The command a transparent wrapper runs: from its first shell, or after `--`. */
+function wrappedCommand(row: KillRow): KillRow {
+  const shell = /\s(\/\S*\/(?:zsh|bash|sh|dash|fish)\s.*)$/.exec(row.argv)?.[1];
+  const dashed = /\s--\s+(\S.*)$/.exec(row.argv)?.[1];
+  const argv = shell ?? dashed;
+  return argv === undefined ? row : { ...row, argv };
+}
+
 /** Who may claim a process for a kill, found by walking up to the nearest wall, BB or launchd. */
 interface Ownership {
   /** The nearest thread id on the path, or null (none, or a wall was in the way). */
@@ -237,6 +254,15 @@ export function planKill(rows: readonly KillRow[], threadId: string, context: Pl
     let parent = ownership.root;
     let role: "chain" | "work" | "helper" = "chain";
     for (const node of path) {
+      if (isTransparentWrapper(node)) {
+        // `-D NAME=value` can hide the wrapped command from argv; its child
+        // shows what it runs.
+        if (node === row) {
+          const child = rows.find((candidate) => candidate.ppid === node.pid);
+          role = hop(parent, child !== undefined && isShell(child) ? child : wrappedCommand(node));
+        }
+        continue;
+      }
       role = hop(parent, node);
       if (role !== "chain") break;
       parent = node;
