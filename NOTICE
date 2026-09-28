@@ -1,5 +1,6 @@
 Hotspot includes code adapted from Ballast
-(https://github.com/braedonsaunders/bb-plugin-ballast), in lib/procs.ts.
+(https://github.com/braedonsaunders/bb-plugin-ballast), in lib/procs.ts and
+lib/kill.ts.
 
 Ballast is licensed under the MIT License:
 

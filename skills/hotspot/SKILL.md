@@ -35,11 +35,49 @@ BB renders a link.
 ```
 bb hotspot status [--json]
 bb hotspot episodes [--since 24h] [--until <time>] [--limit 10] [--json]
+bb hotspot kill <threadId> [--yes] [--json]
 ```
 
 `status` prints the latest sample and the episode in progress, if any.
 `episodes` lists episodes newest first; `--limit` is 1–50 and the JSON form
 keeps the top five culprits per episode.
+
+`kill` prints which of a thread's processes would get SIGTERM and which are
+spared, with the reason; nothing is signalled without `--yes`. With `--yes`
+it applies that plan: SIGTERM, then SIGKILL after 5 seconds for survivors
+that are still the same process. Run `kill --yes` only when the user asks
+for it, and only for the thread they name. There is no agent tool for
+killing processes or stopping a thread's turn, on purpose.
+
+## What a kill touches
+
+A target must belong to the thread (the attribution rule under Limits) and
+be owned by the user. Always spared, and listed with the reason:
+
+- the thread's agent: a thread process whose parent is BB, or whose parent
+  is outside the thread (the provider CLI such as `claude` or `codex`);
+- BB itself: anything under `bb.app` or named `bb`/`bb Helper`, including a
+  `bb` CLI call, and Hotspot's own process chain;
+- the shell running a protected process, and the rest of a `bb` CLI call's
+  command (`bb hotspot kill … | head`);
+- other users' processes, system binaries (`/System`, `/usr/libexec`,
+  `/usr/sbin`, `/sbin`), and app bundles in `/Applications` unless they run
+  `--headless` or with a remote-debugging port.
+
+Processes outside the thread are never listed. The plan id expires after
+two minutes and works once. Before each signal the server re-reads the
+process table and refuses a target whose start time or command line
+changed (a recycled pid) or that no longer passes these rules. Every kill
+is logged with its counts (`bb plugin logs hotspot`).
+
+## In the BB window
+
+The sidebar footer shows a dot coloured by thermal level (green nominal,
+amber moderate, red heavy or worse) and machine CPU, plus the level and the
+top thread's title while hot or over the CPU threshold. Hovering shows the
+full line; clicking opens a popover with the current reading, the five
+busiest threads (Open, Stop turn, Kill processes…), the top other
+processes, the last three episodes and a link to the Hotspot page.
 
 ## Settings
 
@@ -51,6 +89,7 @@ Set with `bb plugin config hotspot set <key> <value>`:
 | `retentionDays` | 7 | 1–30 |
 | `cpuThreshold` | 80 (% of all cores) | 10–100 |
 | `toast` | true | show a toast in BB when an episode opens |
+| `allowKill` | true | offer Kill processes; `false` hides the button and refuses `bb hotspot kill` |
 
 ## Limits
 
@@ -75,4 +114,10 @@ Set with `bb plugin config hotspot set <key> <value>`:
 - Nothing is sampled while the Mac sleeps or the plugin is off; a gap longer
   than three intervals (the larger of the old and new interval, if the
   setting changed) ends an open episode.
-- Hotspot only reads. It never signals, renices or stops a process.
+- Sampling only reads. The only signals Hotspot sends are the user's own
+  kills, and it never renices anything. Stop turn interrupts a thread's
+  running turn through BB, like BB's own stop button; the thread can be
+  resumed.
+- Processes started from Claude Code's tool shell show no environment to
+  `ps`, so one that outlived its shell (reparented to launchd) belongs to no
+  thread and a kill cannot reach it; stop it by hand.

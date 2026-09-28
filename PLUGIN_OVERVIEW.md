@@ -3,6 +3,10 @@ watching Activity Monitor.
 
 ## What you get
 
+- A live readout in the sidebar footer: a heat dot, CPU, and the busiest
+  thread while the Mac is hot. Click it to open a thread, stop its running
+  turn, or kill the dev servers and builds it left running, after a
+  confirmation that lists exactly what gets stopped.
 - A **Hotspot** page with a 24-hour and 7-day timeline of CPU and macOS
   thermal pressure, with hot episodes highlighted.
 - For each episode, the BB threads that used the most CPU during it, linked
@@ -15,5 +19,7 @@ watching Activity Monitor.
 
 Hotspot samples once a minute using `ps`, `notifyutil` and the kernel's CPU
 counters, and keeps seven days of history in its own database on the BB
-server. It only reads: it never slows, stops or changes a process, and it
-needs no account, root access or network service.
+server. Sampling only reads, and it needs no account, root access or
+network service. The only processes it ever signals are the ones you
+confirm in a kill plan: a thread's own work, never its agent, BB, your apps
+or system processes. Turn that off with the `allowKill` setting.

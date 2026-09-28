@@ -6,7 +6,8 @@
  * Copyright (c) Braedon Saunders. Licensed under the MIT License; see NOTICE.
  *
  * Changes from the original: memory classification, kill-candidate rules and
- * byte formatting are gone (Hotspot never touches a process). `ps` also
+ * byte formatting are gone (the sampler never touches a process; the kill
+ * rules live in lib/kill.ts). `ps` also
  * prints each process's environment (`-E`), because BB exports
  * `BB_THREAD_ID` to every agent it launches and almost nothing else carries
  * the id. A bare `thr_…` anywhere in argv no longer counts, only a worktree
