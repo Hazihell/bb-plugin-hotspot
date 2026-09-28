@@ -29,7 +29,7 @@ test("prune drops samples older than the retention window only", () => {
   store.addSample(sample(now - 7 * DAY_MS - 1));
   store.addSample(sample(now - 7 * DAY_MS));
   store.addSample(sample(now - 60_000));
-  assert.deepEqual(store.prune(now, 7), { samples: 2 });
+  assert.deepEqual(store.prune(now, 7), { samples: 2, episodes: 0 });
   assert.deepEqual(
     store.samples(0, now).map((row) => row.at),
     [now - 7 * DAY_MS, now - 60_000],
