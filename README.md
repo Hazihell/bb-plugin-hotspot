@@ -12,14 +12,19 @@ shows a toast naming the top thread.
 
 The sidebar footer always shows a heat dot and machine CPU, and the level
 and top thread while hot; hover for the full line. Clicking it opens a
-popover with the busiest threads, where each one can be opened, have its
+popover that leads with the verdict ("Running hot since 2:13 PM, mostly
+<thread>"), then the busiest threads, where each one can be opened, have its
 running turn stopped, or have its work processes killed after a
-confirmation that lists exactly what gets SIGTERM and what is spared.
+confirmation that names what gets SIGTERM and lists what is spared. On a
+phone (BB Connect) the indicator sits in the sidebar drawer's footer, the
+popover opens as a bottom sheet with 44px targets, and the drawer closes
+when you jump to a thread or the page.
 
-The **Hotspot** page in the sidebar shows the current reading, a 24-hour or
-7-day timeline of CPU with the thermal level beneath it and episodes shaded,
-and the episode list. Expand an episode to see its culprits and jump to their
-threads. Agents answer "why was my Mac hot at 3pm?" with the
+The **Hotspot** page in the sidebar shows the same verdict, a 24-hour or
+7-day timeline of CPU with the thermal level beneath it and hot spells
+(episodes) shaded, and the list of hot spells. Hover, tap or step through
+the chart with the arrow keys; selecting a shaded band, or a recent hot
+spell in the popover, opens that episode's culprits. Agents answer "why was my Mac hot at 3pm?" with the
 `hotspot_history` tool, and `bb hotspot status` / `bb hotspot episodes` do the
 same from a terminal. `skills/hotspot/SKILL.md` documents the commands,
 settings and limits.
@@ -47,8 +52,12 @@ with tests: `procs.ts` (process table and thread attribution), `thermal.ts`,
 `sample.ts`, `episodes.ts` (the detector, a pure state machine), `store.ts`
 (the plugin's SQLite database), `report.ts` (text and timeline shaping),
 `kill.ts` (the kill planner and apply) and `footer.ts` (the footer wording).
-`app.tsx` is the page, the sidebar badge and the toast;
-`components/footer-indicator.tsx` is the footer indicator and popover.
+`lib/present.ts` holds the verdict and the time, tick and kill-summary
+wording the UI shows. `app.tsx` is the page, the sidebar badge and the
+toast; `components/footer-indicator.tsx` is the footer indicator and
+popover, `components/kill-confirm.tsx` the kill confirmation,
+`components/timeline-chart.tsx` the chart and `components/heat.tsx` the
+shared verdict block and heat colours.
 `components/ui/` is vendored source you own.
 
 ## Install

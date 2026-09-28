@@ -97,9 +97,13 @@ counts (`bb plugin logs hotspot`).
 The sidebar footer shows a dot coloured by thermal level (green nominal,
 amber moderate, red heavy or worse) and machine CPU, plus the level and the
 top thread's title while hot or over the CPU threshold. Hovering shows the
-full line; clicking opens a popover with the current reading, the five
-busiest threads (Open, Stop turn, Kill processes…), the top other
-processes, the last three episodes and a link to the Hotspot page.
+full line; clicking opens a popover that leads with a verdict (running
+cool, warming up, working hard or running hot, and the thread to blame),
+then the five busiest threads (Open, Stop turn, Kill processes…), other
+busy processes, the last three episodes ("hot spells" in the UI; each
+opens on the Hotspot page) and a link to the page. On a phone the
+indicator is in the sidebar drawer's footer and the popover is a bottom
+sheet.
 
 ## Settings
 
