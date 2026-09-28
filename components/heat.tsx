@@ -35,6 +35,28 @@ export function thermalFill(level: number | null): string {
   return "fill-destructive";
 }
 
+/**
+ * Hotspot's mark: the flame the sidebar row uses (Lucide's Flame, ISC
+ * licence), drawn inline because the shared icon registry has no flame.
+ * Tinted with `currentColor`.
+ */
+export function FlameIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={cn("shrink-0", className)}
+    >
+      <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+    </svg>
+  );
+}
+
 export function HeatDot({ tone, className }: { tone: FooterTone; className?: string }) {
   return <span aria-hidden="true" className={cn("inline-block shrink-0 rounded-full", TONE_DOT[tone], className)} />;
 }
@@ -78,7 +100,10 @@ export function VerdictBlock({
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">since {clockText(view.since)}</span>
         )}
       </div>
-      <p className={cn("mt-1 text-muted-foreground", size === "page" ? "text-sm" : "text-xs")}>{view.detail}</p>
+      {/* Once there is a reading, the numbers row below says what the detail would. */}
+      {status?.latest == null ? (
+        <p className={cn("mt-1 text-muted-foreground", size === "page" ? "text-sm" : "text-xs")}>{view.detail}</p>
+      ) : null}
       {culprit === null ? (
         view.reassurance === null ? null : (
           <p className="mt-2 text-sm text-foreground">{view.reassurance}</p>

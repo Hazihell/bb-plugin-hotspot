@@ -7,19 +7,29 @@
 // sidebar, and portals React into it. The <li> carries this plugin's scope
 // attributes so its Tailwind classes apply. The server decides every kill;
 // this file only shows a plan and returns the plan id it was given.
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { Episode, KillPlanView, Overview, rpcContract } from "../lib/contract";
-import { footerView } from "../lib/footer";
-import { thermalLabel } from "../lib/labels";
+import {
+  type FooterHeat,
+  type FooterLine,
+  type FooterMetric,
+  type MetricAlert,
+  STACK_GAP,
+  STACK_SPACE,
+  fitFooter,
+  footerView,
+} from "../lib/footer";
+import { bytesText, thermalLabel } from "../lib/labels";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { cpuText, dayClockText, durationText, pct, threadMeta } from "../lib/present";
 import { SAMPLED } from "../lib/signals";
 import { cn } from "../lib/utils";
 import { type StatusState, useStatus } from "../hooks/use-status";
-import { ErrorNote, HeatDot, SkeletonLine, VerdictBlock, thermalSwatch } from "./heat";
+import { ErrorNote, FlameIcon, SkeletonLine, VerdictBlock, thermalSwatch } from "./heat";
+import { MetricsRow } from "./metrics";
 import { KillConfirm } from "./kill-confirm";
 import { Button } from "./ui/button";
 import { Icon } from "./ui/icon";
@@ -107,49 +117,160 @@ function closeSidebarDrawer(from: Element) {
   toggle?.click();
 }
 
+/** The flame's colour says the heat even when the word is dropped. */
+const HEAT_ICON: Record<FooterHeat | "calm", string> = {
+  calm: "text-muted-foreground",
+  Busy: "text-[var(--warning)]",
+  Warm: "text-[var(--warning)]",
+  Hot: "text-destructive",
+};
+const HEAT_WORD: Record<FooterHeat, string> = {
+  Busy: "text-[var(--warning-text)]",
+  Warm: "text-[var(--warning-text)]",
+  Hot: "text-destructive",
+};
+export const ALERT_TEXT: Record<Exclude<MetricAlert, null>, string> = {
+  warn: "text-[var(--warning-text)]",
+  hot: "text-destructive",
+};
+
+/** The flame, its gap and a little slack, in px, beside the measured text. */
+const ICON_AND_GAP = 14 + 4 + 1;
+/** The stacked metrics' size, whatever size the footer around them uses (the phone drawer's is 14px). */
+const STACK_PX = 11;
+
+let measureContext: CanvasRenderingContext2D | null = null;
+function textWidth(text: string, font: string): number {
+  measureContext ??= document.createElement("canvas").getContext("2d");
+  if (measureContext === null) return text.length * 7;
+  measureContext.font = font;
+  return measureContext.measureText(text).width;
+}
+
+interface TextBox {
+  /** Pixels left for text beside the flame. */
+  width: number;
+  /** CSS fonts for the one-line readout and the stacked metrics. */
+  line: string;
+  stack: string;
+}
+
+/** The text width the button leaves beside the flame, and the fonts it draws in. */
+function useTextBox(element: HTMLElement | null): TextBox | null {
+  const [box, setBox] = useState<TextBox | null>(null);
+  useEffect(() => {
+    if (element === null) return;
+    const update = () => {
+      const style = getComputedStyle(element);
+      const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+      const width = element.clientWidth - padding - ICON_AND_GAP;
+      // Measured at medium weight: the heat word and a flagged number are drawn that way.
+      const line = `500 ${style.fontSize} ${style.fontFamily}`;
+      const stack = `500 ${STACK_PX}px ${style.fontFamily}`;
+      setBox((previous) =>
+        previous?.width === width && previous.line === line && previous.stack === stack ? previous : { width, line, stack },
+      );
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    update();
+    return () => observer.disconnect();
+  }, [element]);
+  return box;
+}
+
+function MetricText({ metric, stacked }: { metric: FooterMetric; stacked?: boolean }) {
+  return (
+    <span className="whitespace-nowrap">
+      <span className="text-muted-foreground">{metric.label}</span>
+      {stacked ? STACK_SPACE : " "}
+      <span className={cn("text-sidebar-foreground", metric.alert !== null && cn("font-medium", ALERT_TEXT[metric.alert]))}>
+        {metric.value}
+      </span>
+    </span>
+  );
+}
+
+function HeatWord({ heat }: { heat: FooterHeat }) {
+  return <span className={cn("font-medium", HEAT_WORD[heat])}>{heat}</span>;
+}
+
+/**
+ * `Hot · CPU 83% · MEM 62% · Home page…` on one line, or CPU over MEM on two
+ * short lines with the heat word beside them. Labels quiet, numbers clear,
+ * colour only on a flagged number.
+ */
+function FooterText({ line }: { line: FooterLine }) {
+  if (line.layout === "stack") {
+    return (
+      <span className="flex min-w-0 items-center" style={{ gap: STACK_GAP }}>
+        <span className="flex flex-col leading-3" style={{ fontSize: STACK_PX }}>
+          {line.metrics.map((metric) => (
+            <MetricText key={metric.label} metric={metric} stacked />
+          ))}
+        </span>
+        {line.heat === null ? null : <HeatWord heat={line.heat} />}
+      </span>
+    );
+  }
+  const parts: ReactNode[] = [];
+  if (line.heat !== null) parts.push(<HeatWord key="heat" heat={line.heat} />);
+  for (const metric of line.metrics) parts.push(<MetricText key={metric.label} metric={metric} />);
+  if (line.title !== null) parts.push(<span key="title">{line.title}</span>);
+  return (
+    <span className="min-w-0 truncate text-muted-foreground">
+      {parts.map((part, index) => (
+        <span key={index}>
+          {index === 0 ? null : " · "}
+          {part}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 /** App overlay: mounts the indicator into the footer. */
 export function FooterIndicator() {
   const slot = useFooterSlot();
   const state = useStatus();
   const { status } = state;
   const [open, setOpen] = useState(false);
+  const [button, setButton] = useState<HTMLButtonElement | null>(null);
+  const box = useTextBox(button);
   if (slot === null) return null;
   const view = footerView({
     latest: status?.latest ?? null,
     hot: status?.open != null,
     cpuThreshold: status?.cpuThreshold ?? 80,
   });
+  const line = fitFooter(view, box?.width ?? Number.POSITIVE_INFINITY, (text, size) =>
+    box === null ? 0 : textWidth(text, size === "stack" ? box.stack : box.line),
+  );
   const tooltip = state.error !== null && status === null ? `Hotspot: can't read the sampler (${state.error})` : view.tooltip;
-  // A bare percentage next to other footer readouts is ambiguous; say what it is while calm and there is room.
-  const calmCpu = view.level === null && view.title === null && view.cpu !== "—";
   return createPortal(
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
+          ref={setButton}
           type="button"
           title={tooltip}
           aria-label={tooltip}
           data-testid="hotspot-footer-indicator"
+          data-hotspot-line={`${line.layout}: ${line.text}`}
           className={cn(
-            "@container/hotspot flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-xs tabular-nums text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring max-md:pointer-coarse:text-sm",
+            // On a phone the drawer leaves ~75px beside the other readouts: no padding, so both numbers still fit.
+            "flex h-8 w-full min-w-0 items-center gap-1 rounded-md px-1 text-xs tabular-nums outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring max-md:pointer-coarse:px-0",
             TOUCH,
           )}
         >
-          <HeatDot tone={view.tone} className="size-2 max-md:pointer-coarse:size-2.5" />
-          {/* Level and CPU never shrink; only the thread title is cut. */}
-          <span
+          <FlameIcon
             className={cn(
-              "flex min-w-0 items-baseline gap-1 whitespace-nowrap",
-              view.tone === "hot" && "font-medium text-destructive",
+              "size-3.5",
+              HEAT_ICON[view.heat ?? "calm"],
+              view.tone === "idle" && "opacity-50",
             )}
-          >
-            {view.level === null ? null : <span className="shrink-0">{view.level} ·</span>}
-            <span className="shrink-0">
-              {view.cpu}
-              {calmCpu ? <span className="ml-1 hidden text-muted-foreground/80 @[5.5rem]/hotspot:inline">CPU</span> : null}
-            </span>
-            {view.title === null ? null : <span className="min-w-0 truncate">· {view.title}</span>}
-          </span>
+          />
+          <FooterText line={line} />
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -224,6 +345,7 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
   }
 
   const threads = latest?.threads.slice(0, 5) ?? [];
+  const cpuThreshold = status?.cpuThreshold ?? 80;
   const others = latest?.procs.filter((proc) => proc.cpu >= 1).slice(0, 3) ?? [];
 
   return (
@@ -232,12 +354,25 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
         {state.error !== null && status === null ? (
           <ErrorNote title="Can't read Hotspot right now" detail={state.error} onRetry={state.retry} />
         ) : (
-          <VerdictBlock status={status} size="sheet" onNavigate={close} />
+          <>
+            <VerdictBlock status={status} size="sheet" onNavigate={close} />
+            <MetricsRow status={status} size="sheet" />
+          </>
         )}
       </div>
 
       {latest === null ? null : (
-        <Section title="Busiest threads">
+        <Section
+          title="Busiest threads"
+          columns={
+            threads.length === 0 ? null : (
+              <>
+                <span className={CPU_COLUMN}>CPU</span>
+                <span className={MEM_COLUMN}>Memory</span>
+              </>
+            )
+          }
+        >
           {threads.length === 0 ? (
             <Empty>No BB thread is using the CPU.</Empty>
           ) : (
@@ -253,7 +388,18 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
                       <span className="min-w-0 flex-1 truncate font-medium text-foreground" title={title}>
                         {title}
                       </span>
-                      <span className="shrink-0 font-medium tabular-nums text-foreground">{cpuText(thread.cpu)}</span>
+                      <span
+                        className={cn(
+                          CPU_COLUMN,
+                          "font-medium tabular-nums text-foreground",
+                          thread.cpu >= cpuThreshold && ALERT_TEXT.hot,
+                        )}
+                      >
+                        {cpuText(thread.cpu)}
+                      </span>
+                      <span className={cn(MEM_COLUMN, "tabular-nums text-foreground")}>
+                        {thread.memBytes === null ? "—" : bytesText(thread.memBytes)}
+                      </span>
                     </div>
                     <p id={metaId} className="text-xs text-muted-foreground">
                       {threadMeta(thread.processes, running)}
@@ -376,10 +522,17 @@ function EpisodeRow({ episode, onOpen }: { episode: Episode; onOpen: () => void 
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+/** Right-aligned number columns in the threads list, headed in the section title row. */
+const CPU_COLUMN = "w-10 shrink-0 text-right";
+const MEM_COLUMN = "w-16 shrink-0 text-right";
+
+function Section({ title, columns, children }: { title: string; columns?: ReactNode; children: ReactNode }) {
   return (
     <section className="border-t border-border px-4 pt-3 pb-2">
-      <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
+      <div className="flex items-baseline gap-3 text-xs font-medium text-muted-foreground">
+        <h3 className="min-w-0 flex-1">{title}</h3>
+        {columns}
+      </div>
       {children}
     </section>
   );
