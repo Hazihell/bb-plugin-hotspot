@@ -58,21 +58,37 @@ function useFooterSlot(): HTMLLIElement | null {
     // never makes BB's wrapping footer row spill onto a second line.
     item.style.flex = "1 1 0%";
     item.style.minWidth = "0";
+    // Watch only the footer's parent once the item is placed, so streamed
+    // chat output never reaches this observer; watch the whole body only
+    // while the footer is missing. A slow check covers what neither sees:
+    // the sidebar itself replaced, or a drawer footer becoming the visible one.
     let frame = 0;
-    const ensure = () => {
-      frame = 0;
-      if (item.isConnected && item.getClientRects().length > 0) return;
-      const menu = visibleFooterMenu();
-      if (menu !== null && item.parentElement !== menu) menu.appendChild(item);
-    };
+    let watched: Node | null = null;
     const observer = new MutationObserver(() => {
       if (frame === 0) frame = requestAnimationFrame(ensure);
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    function ensure() {
+      frame = 0;
+      if (!item.isConnected || item.getClientRects().length === 0) {
+        const menu = visibleFooterMenu();
+        if (menu !== null && item.parentElement !== menu) menu.appendChild(item);
+      }
+      const parent = item.isConnected ? (item.closest('[data-sidebar="footer"]')?.parentElement ?? null) : null;
+      const target = parent ?? document.body;
+      if (target !== watched) {
+        observer.disconnect();
+        observer.observe(target, { childList: true, subtree: true });
+        watched = target;
+      }
+    }
     ensure();
+    const check = window.setInterval(() => {
+      if (!item.isConnected || item.getClientRects().length === 0 || watched?.isConnected === false) ensure();
+    }, 2_000);
     setSlot(item);
     return () => {
       observer.disconnect();
+      window.clearInterval(check);
       if (frame !== 0) cancelAnimationFrame(frame);
       item.remove();
       setSlot(null);
