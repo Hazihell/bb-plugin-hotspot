@@ -12,7 +12,7 @@ import type { EpisodeView, Sample, SampleView, TimelinePoint } from "./schemas";
  * null and draw as gaps, which is how the chart shows the Mac was asleep.
  */
 export function bucketSamples(
-  samples: Sample[],
+  samples: ReadonlyArray<Pick<Sample, "at" | "cpu" | "thermal">>,
   from: number,
   to: number,
   count: number,

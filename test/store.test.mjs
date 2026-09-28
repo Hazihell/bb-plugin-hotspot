@@ -63,3 +63,13 @@ test("a title stored by an older build is stripped when the row is read", () => 
   );
   assert.deepEqual(store.latest().threads, [{ threadId: "thr_aaaaaaaaaa", cpu: 9, processes: 1 }]);
 });
+
+test("readings carry only time, CPU and thermal level", () => {
+  const store = openStore();
+  store.addSample(sample(1_000, { threads: [{ threadId: "thr_aaaaaaaaaa", cpu: 9, processes: 1 }] }));
+  store.addSample(sample(2_000, { thermal: null, cpu: 55 }));
+  assert.deepEqual(store.readings(0, 5_000), [
+    { at: 1_000, cpu: 10, thermal: 0 },
+    { at: 2_000, cpu: 55, thermal: null },
+  ]);
+});

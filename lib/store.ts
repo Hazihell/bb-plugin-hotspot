@@ -11,6 +11,9 @@ import type Database from "better-sqlite3";
 import type { z } from "zod";
 import { type Episode, type Sample, episodeSchema, sampleSchema } from "./schemas";
 
+const readingSchema = sampleSchema.pick({ at: true, cpu: true, thermal: true });
+export type Reading = z.infer<typeof readingSchema>;
+
 type Db = Database.Database;
 
 /** Append-only: the index is the migration id. Never edit a shipped entry. */
@@ -121,6 +124,11 @@ export function createStore(db: Db) {
   const selectSamples = db.prepare(
     `SELECT * FROM samples WHERE at >= ? AND at <= ? ORDER BY at`,
   );
+  // The timeline only needs these three columns; skipping the thread and
+  // process JSON keeps a 7-day read cheap.
+  const selectReadings = db.prepare(
+    `SELECT at, cpu, thermal FROM samples WHERE at >= ? AND at <= ? ORDER BY at`,
+  );
   const selectLatest = db.prepare(`SELECT * FROM samples ORDER BY at DESC LIMIT 10`);
   const deleteSamples = db.prepare(`DELETE FROM samples WHERE at < ?`);
   const insertEpisode = db.prepare(
@@ -157,6 +165,12 @@ export function createStore(db: Db) {
     },
     samples(from: number, to: number): Sample[] {
       return (selectSamples.all(from, to) as SampleRow[]).map(toSample).filter(present);
+    },
+    /** Time, CPU and thermal level only, for the timeline. */
+    readings(from: number, to: number): Reading[] {
+      return (selectReadings.all(from, to) as unknown[])
+        .map((row) => parseRow(readingSchema, () => row))
+        .filter(present);
     },
     /** The newest sample that parses. */
     latest(): Sample | null {

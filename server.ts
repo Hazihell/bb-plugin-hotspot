@@ -202,7 +202,7 @@ export default async function plugin(bb: BbPluginApi) {
       const { spanMs, buckets } = RANGE_SPECS[range];
       const to = Date.now();
       const from = to - spanMs;
-      const { bucketMs, points } = bucketSamples(store.samples(from, to), from, to, buckets);
+      const { bucketMs, points } = bucketSamples(store.readings(from, to), from, to, buckets);
       return {
         from,
         to,
