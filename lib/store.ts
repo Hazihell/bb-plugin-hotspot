@@ -46,6 +46,8 @@ export const MIGRATIONS = [
   // full reading as JSON. Older rows keep NULL in both.
   `ALTER TABLE samples ADD COLUMN mem REAL`,
   `ALTER TABLE samples ADD COLUMN memory TEXT`,
+  // BB's total and its app/threads split, as JSON. Older rows keep NULL.
+  `ALTER TABLE samples ADD COLUMN bb TEXT`,
 ];
 
 export const DAY_MS = 86_400_000;
@@ -59,6 +61,8 @@ interface SampleRow {
   memory: string | null;
   threads: string;
   procs: string;
+  /** Absent before the column's migration ran on this row's table; NULL in older rows. */
+  bb?: string | null;
 }
 
 /**
@@ -83,6 +87,7 @@ function toSample(row: SampleRow): Sample | null {
     memory: row.memory === null ? null : JSON.parse(row.memory),
     threads: JSON.parse(row.threads),
     procs: JSON.parse(row.procs),
+    bb: row.bb == null ? null : JSON.parse(row.bb),
   }));
 }
 
@@ -129,8 +134,8 @@ function episodeParams(episode: Episode) {
 
 export function createStore(db: Db) {
   const insertSample = db.prepare(
-    `INSERT OR REPLACE INTO samples (at, thermal, cpu, load, mem, memory, threads, procs)
-     VALUES (@at, @thermal, @cpu, @load, @mem, @memory, @threads, @procs)`,
+    `INSERT OR REPLACE INTO samples (at, thermal, cpu, load, mem, memory, threads, procs, bb)
+     VALUES (@at, @thermal, @cpu, @load, @mem, @memory, @threads, @procs, @bb)`,
   );
   const selectSamples = db.prepare(
     `SELECT * FROM samples WHERE at >= ? AND at <= ? ORDER BY at`,
@@ -184,6 +189,7 @@ export function createStore(db: Db) {
       memory: sample.memory === null ? null : JSON.stringify(sample.memory),
       threads: JSON.stringify(sample.threads),
       procs: JSON.stringify(sample.procs),
+      bb: sample.bb === null ? null : JSON.stringify(sample.bb),
     });
   }
 

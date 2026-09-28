@@ -89,6 +89,7 @@ test("parsePs reads pid, ppid, cpu, resident memory and skips malformed lines", 
     key: "200@Mon Sep 8 14:04:23 2026",
     name: "claude",
     threadId: "thr_aaaaaaaaaa",
+    bb: false,
   });
 });
 

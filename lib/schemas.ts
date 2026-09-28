@@ -39,6 +39,25 @@ export const memorySchema = z.object({
   pressure: z.enum(["normal", "warn", "critical"]).nullable(),
 });
 
+/** CPU, memory and process count over a set of processes. */
+export const bbPartSchema = z.object({
+  /** Share of the whole machine, 0–100. */
+  cpu: z.number(),
+  /** Resident memory summed over the processes; shared pages count once per process. */
+  memBytes: z.number(),
+  processes: z.number(),
+});
+
+/**
+ * Everything BB is running (lib/procs.ts, bbTotals): the total, and its two
+ * parts, which never overlap: BB's own processes, and every process
+ * attributed to a thread.
+ */
+export const bbTotalSchema = bbPartSchema.extend({
+  app: bbPartSchema,
+  threads: bbPartSchema,
+});
+
 export const sampleSchema = z.object({
   at: z.number(),
   /** macOS thermal pressure 0–4, or null where it cannot be read. */
@@ -51,6 +70,8 @@ export const sampleSchema = z.object({
   memory: memorySchema.nullable().default(null),
   threads: z.array(threadEntrySchema),
   procs: z.array(processEntrySchema),
+  /** Null when `ps` failed, and in rows from older builds. */
+  bb: bbTotalSchema.nullable().default(null),
 });
 
 export const culpritSchema = z.object({
@@ -115,6 +136,7 @@ export const timelinePointSchema = z.object({
 
 export type ThreadEntry = z.infer<typeof threadEntrySchema>;
 export type Memory = z.infer<typeof memorySchema>;
+export type BbTotal = z.infer<typeof bbTotalSchema>;
 export type ProcessEntry = z.infer<typeof processEntrySchema>;
 export type Sample = z.infer<typeof sampleSchema>;
 export type Culprit = z.infer<typeof culpritSchema>;

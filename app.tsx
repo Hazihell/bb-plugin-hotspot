@@ -20,8 +20,8 @@ import { MetricsRow } from "@/components/metrics";
 import { MonitorButton, useOpenMonitor } from "@/components/monitor-button";
 import { TimelineChart } from "@/components/timeline-chart";
 import { useStatus, useWatchLease } from "@/hooks/use-status";
-import { thermalLabel } from "./lib/labels";
-import { clockText, dayClockText, durationText, pct } from "./lib/present";
+import { bytesText, thermalLabel } from "./lib/labels";
+import { bbTotalTitle, clockText, cpuText, dayClockText, durationText, pct } from "./lib/present";
 import { EPISODE_OPENED, type EpisodeOpenedSignal, SAMPLED } from "./lib/signals";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -263,7 +263,16 @@ function HotspotPage({ subPath }: { subPath: string }) {
             {latest === null ? null : (
               <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
                 <p className="min-w-0 flex-1 text-muted-foreground">
-                  Checked {clockText(latest.at)} · hot at {pct(status?.cpuThreshold ?? 80)} CPU · lines show the last hour
+                  Checked {clockText(latest.at)}
+                  {latest.bb == null ? null : (
+                    <>
+                      {" · "}
+                      <span title={bbTotalTitle(latest.bb)} className="tabular-nums">
+                        BB total {cpuText(latest.bb.cpu)} CPU, {bytesText(latest.bb.memBytes)}
+                      </span>
+                    </>
+                  )}{" "}
+                  · hot at {pct(status?.cpuThreshold ?? 80)} CPU · lines show the last hour
                 </p>
                 {monitor.error === null ? null : (
                   <p role="alert" className="text-destructive">

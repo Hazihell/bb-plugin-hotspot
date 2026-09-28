@@ -30,8 +30,8 @@ Call `hotspot_history` with a window around the time the user names:
 - `limit`: most episodes to list, 1–20, default 5.
 
 It returns a summary of the whole window (average and peak CPU, average and
-peak memory used, peak swap, worst memory pressure, peak thermal level, and
-the busiest threads with their CPU and peak memory) and every episode
+peak memory used, peak swap, worst memory pressure, peak thermal level,
+BB's total CPU (average and peak) and peak memory, and the busiest threads with their CPU and peak memory) and every episode
 overlapping it with its ranked culprits. Samples taken before memory was
 recorded say "Memory: not recorded". When there is no episode, the window summary still says what was
 busy. Name the culprit thread by title and give its id as `@thread:<id>` so
@@ -47,9 +47,11 @@ bb hotspot kill <threadId> [--yes] [--json]
 
 `status` takes a fresh reading (or reuses one under 5 seconds old), so its
 CPU figures cover the time since the previous reading rather than the last
-stored minute. It prints the reading (including a memory line and each
-thread's memory) and the episode in progress, if any; `--json` carries the
-full memory reading under `latest.memory` and `memBytes` per thread.
+stored minute. It prints the reading (including a memory line, a BB total line
+with its app/threads split, and each thread's memory) and the episode in progress, if any; `--json` carries the
+full memory reading under `latest.memory`, `memBytes` per thread, and
+the BB total under `latest.bb` (`cpu`, `memBytes`, `processes`, and the
+same for `app` and `threads`).
 `episodes` lists episodes newest first; `--limit` is 1–50 and the JSON form
 keeps the top five culprits per episode.
 
@@ -115,7 +117,9 @@ A figure turns red at the CPU threshold, and MEM turns amber or red under
 kernel memory pressure. Hovering shows the full line; clicking opens a
 popover that leads with a verdict (running cool, warming up, working hard
 or running hot, and the thread to blame), then heat, CPU, memory (with
-swap) and load per core with a line for the last hour, then the five
+swap) and load per core with a line for the last hour, then BB's total CPU and memory (the
+app's own processes plus every thread's; memory is summed RSS, so shared
+pages count more than once) and the five
 busiest threads with CPU and memory, one line each (the title opens the
 thread; "…" unfolds Stop turn and Kill processes…; threads under 1% CPU and
 1 GB fold into "N idle threads"), other

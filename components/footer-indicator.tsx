@@ -24,7 +24,7 @@ import {
 } from "../lib/footer";
 import { bytesText, thermalLabel } from "../lib/labels";
 import { usePortalScopeProps } from "../lib/portal-scope";
-import { cpuText, dayClockText, durationText, pct, threadMeta } from "../lib/present";
+import { bbTotalTitle, cpuText, dayClockText, durationText, pct, threadMeta } from "../lib/present";
 import { RUNNING_CHANGED, SAMPLED } from "../lib/signals";
 import { emptyList, listRows, nextList } from "../lib/thread-list";
 import { cn } from "../lib/utils";
@@ -492,14 +492,23 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
 
       {latest === null ? null : (
         <section {...hold.handlers} className="flex min-h-0 flex-1 flex-col border-t border-border pt-3 pb-1.5">
+          {/*
+            The header row carries BB's total in the rows' own CPU and
+            memory columns, so the total costs no height; the rows below
+            read as parts of it.
+          */}
           <div className="flex shrink-0 items-baseline gap-3 px-4 text-xs font-medium text-muted-foreground">
-            <h3 className="min-w-0 flex-1">Busiest threads</h3>
-            {threads.length === 0 ? null : (
-              <>
-                <span className={CPU_COLUMN}>CPU</span>
-                <span className={MEM_COLUMN}>Memory</span>
-                <span aria-hidden="true" className={ACTIONS_COLUMN} />
-              </>
+            <h3 className="min-w-0 flex-1 truncate">Busiest threads</h3>
+            {latest.bb == null ? (
+              threads.length === 0 ? null : (
+                <>
+                  <span className={CPU_COLUMN}>CPU</span>
+                  <span className={MEM_COLUMN}>Memory</span>
+                  <span aria-hidden="true" className={ACTIONS_COLUMN} />
+                </>
+              )
+            ) : (
+              <BbTotal bb={latest.bb} />
             )}
           </div>
           <div className="min-h-0 overflow-y-auto px-4 pt-1">
@@ -628,6 +637,25 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
 }
 
 type ThreadEntry = NonNullable<Status["latest"]>["threads"][number];
+
+/** `BB total  23%  3.1 GB`, the figures in the CPU and memory columns; the split is in the tooltip. */
+function BbTotal({ bb }: { bb: NonNullable<NonNullable<Status["latest"]>["bb"]> }) {
+  const title = bbTotalTitle(bb);
+  return (
+    <>
+      <span title={title} className="shrink-0 font-normal">
+        BB total
+      </span>
+      <span title={title} className={cn(CPU_COLUMN, "tabular-nums text-foreground")}>
+        {cpuText(bb.cpu)}
+      </span>
+      <span title={title} className={cn(MEM_COLUMN, "tabular-nums text-foreground")}>
+        {bytesText(bb.memBytes)}
+      </span>
+      <span aria-hidden="true" className={ACTIONS_COLUMN} />
+    </>
+  );
+}
 
 /**
  * One line per thread: the title opens it, then CPU, memory and a "…"

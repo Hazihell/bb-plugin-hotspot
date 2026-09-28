@@ -35,7 +35,13 @@ a figure never appears without its label. Hover for the full line. Clicking
 it opens a popover that leads with the verdict ("Running hot since 2:13 PM,
 mostly <thread>"), then a numbers row (heat, CPU, memory with swap, load per
 core, each with a line for the last hour and colour only when it crosses a
-line), then the busiest threads, one line each with CPU and memory. Clicking a
+line), then the busiest threads, one line each with CPU and memory. The
+list's header row carries **BB total** in the same CPU and memory columns:
+BB's own processes (everything running from `bb.app`, its helpers and
+server, and the `bb` CLI) plus every process attributed to a thread, with
+the app/threads split in its tooltip. Children of BB that no thread claims
+(a plugin's build toolchain, say) are not counted. Memory is summed
+resident size, so pages shared between processes count more than once. Clicking a
 title opens the thread; its "…" button unfolds the process count, Stop turn
 and Kill processes…, which kills its work processes after a confirmation
 that names what gets SIGTERM and lists what is spared. Threads under 1% CPU

@@ -86,6 +86,8 @@ export interface ProcessRow {
   name: string;
   /** The thread named by this process itself (environment or argv). */
   threadId: string | null;
+  /** One of BB's own processes (isBbCommand). */
+  bb: boolean;
 }
 
 export interface ThreadCpu {
@@ -113,6 +115,15 @@ export function processName(command: string): string {
   const base = (argv0.split("/").pop() ?? argv0).trim();
   // `next-server (v16.3.4)` — the version is noise in a label.
   return base.replace(/\s*\([^)]*\)\s*$/, "") || argv0;
+}
+
+/**
+ * BB's own processes: the app, its helpers, its server and daemons (all
+ * `bb.app/Contents/…` on macOS), bridges and the `bb` CLI. The kill rules
+ * treat these as walls (lib/kill.ts); the BB total counts them as the app.
+ */
+export function isBbCommand(argv: string, name: string): boolean {
+  return /\/bb\.app\/Contents\//i.test(argv) || /^bb(?: Helper\b.*)?$/i.test(name);
 }
 
 /**
@@ -179,6 +190,7 @@ export function parsePsLine(line: string): ProcessRow | null {
   const match = DARWIN_LINE.exec(line);
   if (match === null) return null;
   const command = match[7];
+  const name = processName(command);
   return {
     pid: Number(match[1]),
     ppid: Number(match[2]),
@@ -186,8 +198,9 @@ export function parsePsLine(line: string): ProcessRow | null {
     rssBytes: Number(match[4]) * 1024,
     cpuMs: parseCpuTime(match[5]),
     key: `${match[1]}@${match[6].replace(/\s+/g, " ")}`,
-    name: processName(command),
+    name,
     threadId: parseThreadId(command),
+    bb: isBbCommand(splitEnvironment(command).argv, name),
   };
 }
 
@@ -232,6 +245,7 @@ export async function readProcesses(
         key: times === null ? null : `${pid}@${times.started}`,
         name: processName(argv),
         threadId: threadIdFrom(argv, env),
+        bb: isBbCommand(argv, processName(argv)),
       };
     }),
   );
@@ -311,4 +325,35 @@ export function topUnattributed(
     .sort((a, b) => b.cpuPercent - a.cpuPercent)
     .slice(0, limit)
     .map((row) => ({ pid: row.pid, name: row.name, cpuPercent: row.cpuPercent }));
+}
+
+/** CPU (percent of one core), resident memory and process count over a set of processes. */
+export interface ProcessTotal {
+  cpuPercent: number;
+  rssBytes: number;
+  processes: number;
+}
+
+/**
+ * Everything BB is running, in two parts that never overlap: `threads` is
+ * every process attributed to a BB thread (attributeThreads), and `app` is
+ * every other process of BB's own (isBbCommand). A BB process that carries
+ * a thread's id, such as the `bb` CLI an agent runs, counts in its thread.
+ * Processes that are neither, including children of BB that no thread
+ * claims, are left out.
+ */
+export function bbTotals(
+  rows: readonly Pick<ProcessRow, "pid" | "cpuPercent" | "rssBytes" | "bb">[],
+  attribution: Map<number, string | null>,
+): { app: ProcessTotal; threads: ProcessTotal } {
+  const app: ProcessTotal = { cpuPercent: 0, rssBytes: 0, processes: 0 };
+  const threads: ProcessTotal = { cpuPercent: 0, rssBytes: 0, processes: 0 };
+  for (const row of rows) {
+    const part = (attribution.get(row.pid) ?? null) !== null ? threads : row.bb ? app : null;
+    if (part === null) continue;
+    part.cpuPercent += row.cpuPercent;
+    part.rssBytes += row.rssBytes;
+    part.processes += 1;
+  }
+  return { app, threads };
 }

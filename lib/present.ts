@@ -6,7 +6,7 @@
  * exists so tests can pin the format.
  */
 import { type FooterInput, type FooterTone, footerView } from "./footer";
-import { thermalLabel } from "./labels";
+import { bytesText, thermalLabel } from "./labels";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -20,6 +20,24 @@ export const pct = (value: number) => `${Math.round(value)}%`;
 /** A thread's CPU for a list: `41%`, or `<1%` rather than a misleading `0%`. */
 export function cpuText(cpu: number): string {
   return cpu < 0.5 ? "<1%" : pct(cpu);
+}
+
+/**
+ * The BB total's tooltip: what counts, the split, and why memory is high.
+ * `bb` is a sample's BB total (lib/schemas.ts).
+ */
+export function bbTotalTitle(bb: {
+  cpu: number;
+  memBytes: number;
+  app: { cpu: number; memBytes: number; processes: number };
+  threads: { cpu: number; memBytes: number; processes: number };
+}): string {
+  return [
+    `BB total: ${cpuText(bb.cpu)} of the Mac's CPU, ${bytesText(bb.memBytes)} memory`,
+    `BB app (${bb.app.processes} processes): ${cpuText(bb.app.cpu)}, ${bytesText(bb.app.memBytes)}`,
+    `All threads (${bb.threads.processes} processes): ${cpuText(bb.threads.cpu)}, ${bytesText(bb.threads.memBytes)}`,
+    "Memory adds up each process's resident size, so memory shared between processes counts more than once.",
+  ].join("\n");
 }
 
 export interface Verdict {

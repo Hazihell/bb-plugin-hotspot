@@ -3,7 +3,7 @@
  */
 import { bytesText, thermalLabel } from "./labels";
 import type { KillPlanView, KillResultView } from "./contract";
-import type { EpisodeView, Memory, Sample, SampleView, TimelinePoint } from "./schemas";
+import type { BbTotal, EpisodeView, Memory, Sample, SampleView, TimelinePoint } from "./schemas";
 
 /**
  * Fold samples into `count` equal buckets over [from, to).
@@ -105,6 +105,15 @@ export function describeMemory(memory: Memory): string {
   );
 }
 
+/** `BB total 23%, 3.1 GB, 41 processes (app 5%, 1.2 GB; threads 18%, 1.9 GB)`. Memory sums RSS, so shared pages count more than once. */
+export function describeBbTotal(bb: BbTotal): string {
+  const part = (entry: BbTotal["app"]) => `${pct(entry.cpu)}, ${bytesText(entry.memBytes)}`;
+  return (
+    `BB total ${part(bb)}, ${bb.processes} processes (app ${part(bb.app)}; threads ${part(bb.threads)}); ` +
+    "memory sums each process's resident size, so shared pages count more than once"
+  );
+}
+
 const memCell = (bytes: number | null) => (bytes === null ? "" : `  ${bytesText(bytes).padStart(6)}`);
 
 export function describeSample(sample: SampleView): string[] {
@@ -112,6 +121,7 @@ export function describeSample(sample: SampleView): string[] {
     `${formatWhen(sample.at)}  thermal ${thermalLabel(sample.thermal)}, CPU ${pct(sample.cpu)}, load/core ${sample.load.toFixed(2)}`,
     sample.memory === null ? "  memory: not read" : `  ${describeMemory(sample.memory)}`,
   ];
+  if (sample.bb != null) lines.push(`  ${describeBbTotal(sample.bb)}`);
   if (sample.threads.length === 0) lines.push("  threads: none using CPU");
   for (const thread of sample.threads) {
     lines.push(`  thread ${pct(thread.cpu).padStart(4)}${memCell(thread.memBytes)}  ${threadName(thread)}, ${thread.processes} proc`);
@@ -164,6 +174,8 @@ export interface WindowSummary {
   peakSwapBytes: number | null;
   /** The worst kernel memory pressure seen. */
   peakPressure: Memory["pressure"];
+  /** BB's total CPU and memory over the samples that recorded it; null when none did. */
+  bb: { samples: number; avgCpu: number; peakCpu: number; peakMemBytes: number } | null;
   /** Every thread seen, by CPU summed over all samples in the window. */
   threads: WindowThread[];
 }
@@ -180,7 +192,15 @@ export function summarizeWindow(samples: Sample[]): WindowSummary {
   let peakMem: number | null = null;
   let peakSwapBytes: number | null = null;
   let pressureRank = -1;
+  let bb: { samples: number; cpuSum: number; peakCpu: number; peakMemBytes: number } | null = null;
   for (const sample of samples) {
+    if (sample.bb != null) {
+      bb ??= { samples: 0, cpuSum: 0, peakCpu: 0, peakMemBytes: 0 };
+      bb.samples += 1;
+      bb.cpuSum += sample.bb.cpu;
+      bb.peakCpu = Math.max(bb.peakCpu, sample.bb.cpu);
+      bb.peakMemBytes = Math.max(bb.peakMemBytes, sample.bb.memBytes);
+    }
     peakCpu = Math.max(peakCpu, sample.cpu);
     cpuSum += sample.cpu;
     if (sample.thermal !== null) peakThermal = Math.max(peakThermal ?? 0, sample.thermal);
@@ -210,6 +230,10 @@ export function summarizeWindow(samples: Sample[]): WindowSummary {
     peakMem,
     peakSwapBytes,
     peakPressure: pressureRank < 0 ? null : PRESSURES[pressureRank],
+    bb:
+      bb === null
+        ? null
+        : { samples: bb.samples, avgCpu: bb.cpuSum / bb.samples, peakCpu: bb.peakCpu, peakMemBytes: bb.peakMemBytes },
     threads: [...threads.values()]
       .sort((a, b) => b.sum - a.sum)
       .map((entry) => ({
@@ -232,6 +256,9 @@ export function describeWindow(
     summary.avgMem === null || summary.peakMem === null
       ? "Memory: not recorded in this window"
       : `Memory used avg ${pct(summary.avgMem)}, peak ${pct(summary.peakMem)}; peak swap ${bytesText(summary.peakSwapBytes ?? 0)}; worst pressure ${summary.peakPressure ?? "unknown"}`,
+    summary.bb === null
+      ? "BB total: not recorded in this window"
+      : `BB total (app and all threads) CPU avg ${pct(summary.bb.avgCpu)}, peak ${pct(summary.bb.peakCpu)}; peak memory ${bytesText(summary.bb.peakMemBytes)} (summed resident size)`,
   ];
   for (const [index, thread] of threads.entries()) {
     const mem = thread.peakMemBytes === null ? "" : `, peak memory ${bytesText(thread.peakMemBytes)}`;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bucketSamples } from "../lib/report.ts";
+import { bucketSamples, describeSample, describeWindow, summarizeWindow } from "../lib/report.ts";
 
 const sample = (at, cpu, thermal = 0, mem = null) => ({ at, cpu, thermal, load: cpu / 100, mem });
 
@@ -65,4 +65,24 @@ test("clampText cuts at a line boundary under the limit", () => {
   assert.ok(clamped.length <= 200);
   assert.ok(clamped.endsWith("… (truncated)"));
   assert.equal(clampText("short", 200), "short");
+});
+
+test("status and the window summary include the BB total, with its split", () => {
+  const bb = {
+    cpu: 23.4,
+    memBytes: 3.1 * 1024 ** 3,
+    processes: 41,
+    app: { cpu: 5, memBytes: 1.2 * 1024 ** 3, processes: 30 },
+    threads: { cpu: 18.4, memBytes: 1.9 * 1024 ** 3, processes: 11 },
+  };
+  const base = { at: 0, thermal: 0, cpu: 50, load: 0.5, memory: null, threads: [], procs: [] };
+  assert.match(
+    describeSample({ ...base, bb }).join("\n"),
+    /BB total 23%, 3\.1 GB, 41 processes \(app 5%, 1\.2 GB; threads 18%, 1\.9 GB\); memory sums/,
+  );
+  assert.doesNotMatch(describeSample({ ...base, bb: null }).join("\n"), /BB total/);
+  const window = summarizeWindow([{ ...base, bb }, { ...base, bb: { ...bb, cpu: 40 } }, { ...base, bb: null }]);
+  assert.deepEqual(window.bb, { samples: 2, avgCpu: 31.7, peakCpu: 40, peakMemBytes: bb.memBytes });
+  assert.match(describeWindow(window, []).join("\n"), /BB total \(app and all threads\) CPU avg 32%, peak 40%; peak memory 3\.1 GB/);
+  assert.match(describeWindow(summarizeWindow([{ ...base, bb: null }]), []).join("\n"), /BB total: not recorded/);
 });

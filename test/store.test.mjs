@@ -10,7 +10,7 @@ function openStore() {
 }
 
 function sample(at, extra = {}) {
-  return { at, thermal: 0, cpu: 10, load: 0.2, memory: null, threads: [], procs: [], ...extra };
+  return { at, thermal: 0, cpu: 10, load: 0.2, memory: null, threads: [], procs: [], bb: null, ...extra };
 }
 
 const MEMORY = {
@@ -102,6 +102,7 @@ test("the memory migration keeps rows stored before it, which read back without 
     memory: null,
     threads: [{ threadId: "thr_aaaaaaaaaa", cpu: 30, processes: 2, memBytes: null }],
     procs: [],
+    bb: null,
   });
   assert.deepEqual(store.readings(0, 5_000), [{ at: 1000, cpu: 42, thermal: 1, load: 0.5, mem: null }]);
 });
@@ -122,4 +123,25 @@ test("closeStrayEpisodes ends every open episode but the detector's own", () => 
   assert.equal(store.closeStrayEpisodes(null), 1);
   assert.equal(store.episode(current.id).endAt, 9_500);
   assert.equal(store.prune(30 * DAY_MS, 7).episodes, 3);
+});
+
+const BB = {
+  cpu: 23,
+  memBytes: 3 * 1024 ** 3,
+  processes: 12,
+  app: { cpu: 5, memBytes: 1024 ** 3, processes: 9 },
+  threads: { cpu: 18, memBytes: 2 * 1024 ** 3, processes: 3 },
+};
+
+test("the BB total round-trips, and rows stored before its migration read back with none", () => {
+  const db = new Database(":memory:");
+  for (const statement of MIGRATIONS.slice(0, 6)) db.exec(statement);
+  db.prepare(
+    `INSERT INTO samples (at, thermal, cpu, load, threads, procs) VALUES (1000, 0, 10, 0.2, '[]', '[]')`,
+  ).run();
+  for (const statement of MIGRATIONS.slice(6)) db.exec(statement);
+  const store = createStore(db);
+  assert.equal(store.latest()?.bb, null);
+  store.addSample(sample(2_000, { bb: BB }));
+  assert.deepEqual(store.latest(), sample(2_000, { bb: BB }));
 });

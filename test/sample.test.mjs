@@ -185,3 +185,36 @@ test("a stored sample measures its whole interval, not the last live reading", a
   assert.equal(stored.cpu, 25);
   assert.equal(live.cpu, 0);
 });
+
+test("the BB total counts BB's own processes and every thread's, and nothing else", async () => {
+  const mac = fakeMac();
+  const add = (pid, ppid, command) => mac.procs.set(pid, { ppid, pcpu: 0, cpuMs: 0, start: EARLY, command });
+  add(100, 1, "/Applications/bb.app/Contents/MacOS/bb");
+  add(101, 100, "/Applications/bb.app/Contents/Frameworks/bb Helper (Renderer).app/Contents/MacOS/bb Helper (Renderer)");
+  // The agent carries its thread's id; the compiler it forked inherits it.
+  add(200, 100, `/Users/me/.local/bin/claude --verbose BB_THREAD_ID=${THREAD}`);
+  add(201, 200, "node tsc --watch");
+  // A `bb` CLI call the agent made is BB's binary but its thread's work.
+  add(202, 200, `/Users/me/.local/bin/bb hotspot status BB_THREAD_ID=${THREAD}`);
+  // Outside BB, and a child of BB no thread claims: neither counts.
+  add(300, 1, "/Applications/Slack.app/Contents/MacOS/Slack");
+  add(400, 100, "/Users/me/.bb/plugins/toolchain/node_modules/@esbuild/darwin-arm64/bin/esbuild");
+  await mac.read();
+  mac.advance(2, { 100: 0.25, 101: 0.25, 200: 0.5, 201: 1, 202: 0.5, 300: 2, 400: 1 });
+  const { live } = await mac.read();
+  // Four cores: a busy core is 25% of the machine. Each fake process holds 1 MiB resident.
+  assert.deepEqual(live.bb, {
+    cpu: 62.5,
+    memBytes: 5 * 1024 ** 2,
+    processes: 5,
+    app: { cpu: 12.5, memBytes: 2 * 1024 ** 2, processes: 2 },
+    threads: { cpu: 50, memBytes: 3 * 1024 ** 2, processes: 3 },
+  });
+});
+
+test("without a process table there is no BB total", async () => {
+  const mac = fakeMac();
+  mac.failNext = true;
+  const { live } = await mac.read();
+  assert.equal(live.bb, null);
+});
