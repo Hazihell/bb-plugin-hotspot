@@ -49,10 +49,16 @@ for 10 s. While the pointer or keyboard focus is in the list, or a row's
 "…" is unfolded, no row moves, joins or leaves, so Stop turn and Kill stay
 on the thread you opened them for. The list keeps room for three rows and
 never shrinks while the popover is open, except when you hide the idle
-threads, so the popover does not jump. On a
+threads, so the popover does not jump. Below the list, the line naming
+busy processes outside BB ends in an **Activity Monitor** button that opens
+macOS Activity Monitor (on Linux, GNOME System Monitor or KDE's) on the
+machine running BB's server; the page has the same button under its
+numbers. It shows only when the server found a monitor, its tooltip names
+that machine, and a failure replaces the line's text for a few seconds. On a
 phone (BB Connect) the indicator sits in the sidebar drawer's footer, the
-popover opens as a bottom sheet with 44px targets, and the drawer closes
-when you jump to a thread or the page.
+popover opens as a bottom sheet with 44px targets, the Activity Monitor
+button is hidden (it would open on the Mac, not the phone), and the drawer
+closes when you jump to a thread or the page.
 
 The **Hotspot** page in the sidebar shows the same verdict and numbers row,
 a 24-hour or 7-day timeline of CPU with the thermal level beneath it and hot
@@ -64,8 +70,9 @@ spell in the popover, opens that episode's culprits. Agents answer "why was my M
 same from a terminal. `skills/hotspot/SKILL.md` documents the commands,
 settings and limits.
 
-Sampling only reads, and Hotspot talks to no network service. The one thing
-that signals a process is **Kill processes** (popover, or
+Sampling only reads, and Hotspot talks to no network service. Besides
+opening Activity Monitor (`open -a "Activity Monitor"`, fixed arguments, no
+shell), the one thing that signals a process is **Kill processes** (popover, or
 `bb hotspot kill <threadId> --yes` typed by a person in a terminal). It
 targets only the thread's own work: what the agent's shells started and
 detached processes carrying the thread's id (dev servers, builds, test
@@ -87,13 +94,15 @@ with tests: `procs.ts` (process table and thread attribution), `thermal.ts`,
 `memory.ts` (memory and swap),
 `sample.ts` (one reading over the live and stored windows), `episodes.ts` (the detector, a pure state machine), `store.ts`
 (the plugin's SQLite database), `report.ts` (text and timeline shaping),
-`kill.ts` (the kill planner and apply) and `footer.ts` (the footer wording
+`kill.ts` (the kill planner and apply), `monitor.ts` (finding and
+opening the OS process monitor) and `footer.ts` (the footer wording
 and how it narrows).
 `lib/present.ts` holds the verdict and the time, tick and kill-summary
 wording the UI shows. `app.tsx` is the page, the sidebar badge and the
 toast; `components/footer-indicator.tsx` is the footer indicator and
 popover, `components/metrics.tsx` the numbers row,
 `components/kill-confirm.tsx` the kill confirmation,
+`components/monitor-button.tsx` the Activity Monitor button,
 `components/timeline-chart.tsx` the chart and `components/heat.tsx` the
 shared verdict block and heat colours.
 `components/ui/` is vendored source you own.

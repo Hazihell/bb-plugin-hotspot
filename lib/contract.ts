@@ -60,6 +60,8 @@ export const rpcContract = defineRpcContract({
       recent: z.array(timelinePointSchema),
       cpuThreshold: z.number(),
       sampleIntervalSeconds: z.number(),
+      /** The OS process monitor the server's machine can open, and that machine's name; null when there is none. */
+      monitor: z.object({ app: z.string(), host: z.string() }).nullable(),
     }),
   },
   /** What the footer popover adds to `status`: recent episodes, which top threads run a turn, and whether kill is allowed. */
@@ -91,6 +93,14 @@ export const rpcContract = defineRpcContract({
   stopTurn: {
     input: z.object({ threadId: threadIdSchema }).strict(),
     output: z.object({ ok: z.literal(true) }),
+  },
+  /** Opens the OS process monitor on the server's machine (lib/monitor.ts). Never throws: a failure is `ok: false`. */
+  openMonitor: {
+    input: z.null(),
+    output: z.discriminatedUnion("ok", [
+      z.object({ ok: z.literal(true), app: z.string() }),
+      z.object({ ok: z.literal(false), app: z.string().nullable(), error: z.string() }),
+    ]),
   },
   timeline: {
     input: z.object({ range: z.enum(RANGES) }).strict(),

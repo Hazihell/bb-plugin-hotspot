@@ -32,6 +32,7 @@ import { type StatusState, useStatus } from "../hooks/use-status";
 import { ErrorNote, FlameIcon, SkeletonLine, VerdictBlock, thermalSwatch } from "./heat";
 import { MetricsRow } from "./metrics";
 import { KillConfirm } from "./kill-confirm";
+import { MonitorButton, useOpenMonitor } from "./monitor-button";
 import { Button } from "./ui/button";
 import { Icon } from "./ui/icon";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
@@ -420,6 +421,7 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
   // away leaves its room, so the rows above do not move after the click.
   const [idleHidden, setIdleHidden] = useState(0);
   const listRef = useNoShrink(idleHidden);
+  const { open: openMonitor, busy: monitorBusy, error: monitorError } = useOpenMonitor();
 
   const planKill = (threadId: string) => {
     setBusy(`kill:${threadId}`);
@@ -561,16 +563,29 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
                     : `${idleThreads.length} idle thread${idleThreads.length === 1 ? "" : "s"}`}
                 </button>
               )}
-              {/* Its line is kept when nothing outside BB is busy, so the list does not grow when something is. */}
-              {others.length === 0 ? (
-                <p aria-hidden="true" className="py-1 text-xs">
-                  &nbsp;
-                </p>
-              ) : (
-                <p className="truncate py-1 text-xs tabular-nums text-muted-foreground">
-                  Also busy outside BB: {others.map((proc) => `${proc.name} ${pct(proc.cpu)}`).join(" · ")}
-                </p>
-              )}
+              {/*
+                Its line is kept when nothing outside BB is busy, so the list
+                does not grow when something is. The monitor button and its
+                failure share the line, so neither adds height.
+              */}
+              <div className="flex items-center gap-2 py-1 text-xs">
+                {monitorError !== null ? (
+                  <p role="alert" title={monitorError} className="min-w-0 flex-1 truncate text-destructive">
+                    {monitorError}
+                  </p>
+                ) : others.length === 0 ? (
+                  <p aria-hidden="true" className="min-w-0 flex-1">
+                    &nbsp;
+                  </p>
+                ) : (
+                  <p className="min-w-0 flex-1 truncate tabular-nums text-muted-foreground">
+                    Also busy outside BB: {others.map((proc) => `${proc.name} ${pct(proc.cpu)}`).join(" · ")}
+                  </p>
+                )}
+                {status?.monitor == null ? null : (
+                  <MonitorButton monitor={status.monitor} onOpen={openMonitor} busy={monitorBusy} className="-my-1 -mr-1 px-1 py-1" />
+                )}
+              </div>
             </div>
           </div>
         </section>

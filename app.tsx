@@ -17,6 +17,7 @@ import type { Episode, Range, Timeline, rpcContract } from "./lib/contract";
 import { FooterIndicator } from "@/components/footer-indicator";
 import { ErrorNote, SkeletonLine, VerdictBlock, thermalSwatch } from "@/components/heat";
 import { MetricsRow } from "@/components/metrics";
+import { MonitorButton, useOpenMonitor } from "@/components/monitor-button";
 import { TimelineChart } from "@/components/timeline-chart";
 import { useStatus, useWatchLease } from "@/hooks/use-status";
 import { thermalLabel } from "./lib/labels";
@@ -229,6 +230,7 @@ function HotspotPage({ subPath }: { subPath: string }) {
   const { status } = state;
   const { timeline, error, refetch } = useTimeline(range);
   const intervalMs = (status?.sampleIntervalSeconds ?? 60) * 1000;
+  const monitor = useOpenMonitor();
 
   // A link from the popover selects an episode; widen to a week if it is older than a day.
   const linked = episodeFromSubPath(subPath);
@@ -259,9 +261,19 @@ function HotspotPage({ subPath }: { subPath: string }) {
             <VerdictBlock status={status} size="page" />
             <MetricsRow status={status} size="page" />
             {latest === null ? null : (
-              <p className="text-xs text-muted-foreground">
-                Checked {clockText(latest.at)} · hot at {pct(status?.cpuThreshold ?? 80)} CPU · lines show the last hour
-              </p>
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
+                <p className="min-w-0 flex-1 text-muted-foreground">
+                  Checked {clockText(latest.at)} · hot at {pct(status?.cpuThreshold ?? 80)} CPU · lines show the last hour
+                </p>
+                {monitor.error === null ? null : (
+                  <p role="alert" className="text-destructive">
+                    {monitor.error}
+                  </p>
+                )}
+                {status?.monitor == null ? null : (
+                  <MonitorButton monitor={status.monitor} onOpen={monitor.open} busy={monitor.busy} className="-my-1 -mr-1 px-1 py-1" />
+                )}
+              </div>
             )}
           </div>
         )}

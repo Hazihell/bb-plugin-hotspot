@@ -13,7 +13,8 @@
 // Sampling only reads. The one thing that signals a process is the user's own
 // "kill this thread's processes" (lib/kill.ts), from the footer popover or
 // `bb hotspot kill`; it is never offered to agents, and neither is stopping a
-// thread's turn.
+// thread's turn. The other thing the user can start is the OS's own process
+// monitor (lib/monitor.ts), which opens on this machine, not the viewer's.
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { performance } from "node:perf_hooks";
@@ -29,6 +30,7 @@ import {
   threadIdSchema,
 } from "./lib/contract";
 import { type KillPlan, type KillRow, type PlanContext, type Signal, applyKill, checkInteractiveCaller, planKill, readKillRows } from "./lib/kill";
+import { type MonitorRunner, findMonitor, openMonitor, systemMonitorRunner } from "./lib/monitor";
 import { systemProcessSource } from "./lib/procs";
 import { type DetectorState, type Episode, restoreState, step } from "./lib/episodes";
 import {
@@ -144,6 +146,8 @@ export interface HotspotDeps {
     /** The plugin server's pid; its ancestors are BB. */
     selfPid?: number;
   };
+  /** How the OS process monitor is found and opened. */
+  monitor?: MonitorRunner;
 }
 
 /** A process and its ancestors in `rows`: the chain that is running Hotspot. */
@@ -458,6 +462,10 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
     }
   }
 
+  // Which monitor exists does not change while the plugin is loaded: look once.
+  const monitorRunner = deps.monitor ?? systemMonitorRunner;
+  const monitor = findMonitor(monitorRunner).catch(() => null);
+
   bb.rpc.register(rpcContract, {
     async overview() {
       const latest = latestSample();
@@ -480,6 +488,12 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
       bb.log.info(`stopped the running turn of ${threadId} from the footer popover`);
       return { ok: true as const };
     },
+    async openMonitor() {
+      const result = await openMonitor(await monitor, monitorRunner);
+      if (result.ok) bb.log.info(`opened ${result.app} from the app`);
+      else bb.log.warn(result.error);
+      return result;
+    },
     watch(input) {
       const wasWatched = watched();
       lastHeartbeat = monotonic();
@@ -500,6 +514,7 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
         recent: bucketSamples(store.readings(now - RECENT_MS, now), now - RECENT_MS, now, RECENT_BUCKETS).points,
         cpuThreshold,
         sampleIntervalSeconds,
+        monitor: await monitor.then((found) => (found === null ? null : { app: found.app, host: os.hostname().replace(/\.local$/, "") })),
       };
     },
     async timeline({ range }) {
