@@ -9,14 +9,15 @@ import { createStore } from "../lib/store.ts";
 const tick = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 const sample = (at, cpu = 10) => ({ at, thermal: 0, cpu, load: 0.1, threads: [], procs: [] });
 
-/** A sampler that records what it was asked for and reports `cpu` on both windows. */
-function recordingSampler(cpu = 10) {
+/** A sampler that records what it was asked for and reports `cpu` (and `threads`) on both windows. */
+function recordingSampler(cpu = 10, threads = []) {
   const calls = [];
   return {
     calls,
     takeReading: async (at, options) => {
       calls.push(options.store);
-      return { live: sample(at, cpu), stored: options.store ? sample(at, cpu) : null };
+      const reading = () => ({ ...sample(at, cpu), threads });
+      return { live: reading(), stored: options.store ? reading() : null };
     },
   };
 }
@@ -99,7 +100,9 @@ test("live readings stop when the lease lapses and start again on the next heart
   assert.ok(stopped > 0);
   await tick(100);
   assert.equal(sampler.calls.length, stopped, "no readings once the lease lapsed");
-  assert.ok(harness.inspection.logEntries.some((entry) => /live readings stopped/.test(entry.message)));
+  assert.ok(
+    harness.inspection.logEntries.some((entry) => /live readings stopped: the last heartbeat arrived 0\.\d s ago/.test(entry.message)),
+  );
 
   await harness.callRpc("watch", null);
   await tick(50);
@@ -124,3 +127,33 @@ test("a due sample is stored once per interval while live readings run", async (
   service.controller.abort();
   await service.done;
 });
+
+test("setting the wall clock back an hour neither stalls live readings, stores an extra sample nor stretches the lease", async () => {
+  const realNow = Date.now;
+  const { sampler, harness, store, service, signals } = await loadWatched(10);
+  try {
+    await harness.callRpc("watch", null);
+    await tick(60);
+    const before = sampler.calls.length;
+    Date.now = () => realNow() - 3_600_000;
+    await harness.callRpc("watch", null);
+    await tick(100);
+    assert.ok(sampler.calls.length >= before + 4, `live readings after the jump: ${sampler.calls.length - before}`);
+    assert.ok(sampler.calls.every((stored) => stored === false));
+    assert.equal(store.samples(0, realNow()).length, 1);
+    assert.equal(signals(SAMPLED).length, 0);
+    // The newest reading is the live one, though its stamp is an hour older than the stored sample.
+    const status = await harness.callRpc("status", null);
+    assert.equal(status.latest.at, signals(LIVE).at(-1).payload.at);
+    // And the lease still lapses on time: a wall-clock lease would last another hour.
+    await tick(250);
+    const lapsed = sampler.calls.length;
+    await tick(100);
+    assert.equal(sampler.calls.length, lapsed);
+  } finally {
+    Date.now = realNow;
+    service.controller.abort();
+    await service.done;
+  }
+});
+

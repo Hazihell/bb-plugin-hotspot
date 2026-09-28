@@ -16,6 +16,7 @@
 // thread's turn.
 import { randomUUID } from "node:crypto";
 import os from "node:os";
+import { performance } from "node:perf_hooks";
 import { PluginCliError, cliCommand, defineCli, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -79,8 +80,12 @@ const WHEN_HELP =
 
 /** How often a live reading is taken while someone is looking. */
 const LIVE_INTERVAL_MS = 2_000;
-/** How long one heartbeat from a visible window keeps live readings going. */
-const WATCH_LEASE_MS = 10_000;
+/**
+ * How long one heartbeat from a visible window keeps live readings going.
+ * Windows renew at a quarter of this (hooks/use-status.ts), so three lost
+ * heartbeats in a row still keep the readings going.
+ */
+const WATCH_LEASE_MS = 20_000;
 /** A reading younger than this answers "now" without running `ps` again. */
 const FRESH_MS = 5_000;
 
@@ -110,6 +115,13 @@ const RUNNING = new Set(["active", "starting"]);
 
 /** Resolves after `ms`. */
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Milliseconds on a clock that never jumps. Everything the service schedules
+ * (samples, live ticks, the lease) runs on it; the wall clock only stamps
+ * samples.
+ */
+const monotonic = () => performance.now();
 
 /** What tests may inject into createHotspot. */
 export interface HotspotDeps {
@@ -203,14 +215,17 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
     return viewSample(sample, known, TOP_THREADS);
   }
 
-  /** The last live reading; kept in memory only. */
+  /** The last live reading, kept in memory only, and when it and the last stored sample were taken (monotonic). */
   let lastLive: Sample | null = null;
+  let lastLiveTick = Number.NEGATIVE_INFINITY;
+  let lastStoredTick = Number.NEGATIVE_INFINITY;
 
-  /** The newest reading: the last live one unless a stored sample is newer. */
+  /**
+   * The newest reading: the last live one unless a sample was stored after
+   * it. Ordered by when they were taken, not by their wall-clock stamps.
+   */
   function latestSample(): Sample | null {
-    const stored = store.latest();
-    if (lastLive === null) return stored;
-    return stored !== null && stored.at > lastLive.at ? stored : lastLive;
+    return lastLive !== null && lastLiveTick >= lastStoredTick ? lastLive : store.latest();
   }
 
   async function viewLatest(): Promise<SampleView | null> {
@@ -257,17 +272,23 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
 
   const liveIntervalMs = deps.liveIntervalMs ?? LIVE_INTERVAL_MS;
   const watchLeaseMs = deps.watchLeaseMs ?? WATCH_LEASE_MS;
-  /** Live readings run until this time; each `watch` call pushes it out. */
-  let watchedUntil = 0;
-  const watched = () => Date.now() < watchedUntil;
+  /** Live readings run until this time (monotonic); each `watch` call pushes it out. */
+  let watchedUntil = Number.NEGATIVE_INFINITY;
+  let lastHeartbeat = Number.NEGATIVE_INFINITY;
+  const watched = () => monotonic() < watchedUntil;
   /** Ends the sampler's current sleep; a no-op while it is reading. */
   let wakeSampler: () => void = () => undefined;
 
-  /** A fresh-enough reading for "now": the last one, or a new live-only one. */
+  /**
+   * A fresh-enough reading for "now": the last one, or a new one that peeks
+   * at the live window, so the footer's next reading still covers its full
+   * interval.
+   */
   async function readNow(): Promise<Sample | null> {
-    if (lastLive !== null && Date.now() - lastLive.at < FRESH_MS) return lastLive;
+    if (lastLive !== null && monotonic() - lastLiveTick < FRESH_MS) return lastLive;
     try {
-      lastLive = (await takeReading(Date.now(), { store: false })).live;
+      lastLive = (await takeReading(Date.now(), { store: false, peek: true })).live;
+      lastLiveTick = monotonic();
     } catch (error) {
       bb.log.warn(`reading failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -440,7 +461,8 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
     },
     watch() {
       const wasWatched = watched();
-      watchedUntil = Math.max(watchedUntil, Date.now() + watchLeaseMs);
+      lastHeartbeat = monotonic();
+      watchedUntil = Math.max(watchedUntil, lastHeartbeat + watchLeaseMs);
       if (!wasWatched) wakeSampler();
       return { leaseMs: watchLeaseMs, liveIntervalMs };
     },
@@ -479,14 +501,19 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
       // A reload restarts the service; sampling again at once would count
       // one extra sample into the streak. Wait out the rest of the interval.
       const { sampleIntervalSeconds: seconds } = await settings.get();
-      let storeAt = Date.now() + startupDelay(store.latestAt(), Date.now(), seconds * 1_000);
+      let storeAt = monotonic() + startupDelay(store.latestAt(), Date.now(), seconds * 1_000);
       let wasLive = false;
       while (!signal.aborted) {
+        const tick = monotonic();
         const started = Date.now();
         const { sampleIntervalSeconds } = await settings.get();
-        const due = started >= storeAt;
+        const due = tick >= storeAt;
         const live = watched();
-        if (live !== wasLive) bb.log.info(live ? "live readings started" : "live readings stopped: no window is watching");
+        if (live && !wasLive) bb.log.info("live readings started");
+        if (!live && wasLive) {
+          const ago = ((tick - lastHeartbeat) / 1_000).toFixed(1);
+          bb.log.info(`live readings stopped: the last heartbeat arrived ${ago} s ago`);
+        }
         wasLive = live;
         if (due || live) {
           try {
@@ -494,7 +521,11 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
             // Unloaded while `ps` ran: this generation must not write any more.
             if (signal.aborted) return;
             lastLive = now;
-            if (stored !== null) await record(stored);
+            lastLiveTick = tick;
+            if (stored !== null) {
+              lastStoredTick = tick;
+              await record(stored);
+            }
             if (live) {
               const payload: LiveSignal = await view(now);
               bb.realtime.publish(LIVE, payload);
@@ -502,12 +533,12 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
           } catch (error) {
             bb.log.warn(`sample failed: ${error instanceof Error ? error.message : String(error)}`);
           }
-          if (due) storeAt = started + sampleIntervalSeconds * 1_000;
+          if (due) storeAt = tick + sampleIntervalSeconds * 1_000;
         }
         // Asked again after the reading: a heartbeat that arrived during it
         // found no sleep to end.
-        const next = watched() ? Math.min(storeAt, started + liveIntervalMs) : storeAt;
-        await sleep(Math.max(0, next - Date.now()), signal, (wake) => (wakeSampler = wake));
+        const next = watched() ? Math.min(storeAt, tick + liveIntervalMs) : storeAt;
+        await sleep(Math.max(0, next - monotonic()), signal, (wake) => (wakeSampler = wake));
         wakeSampler = () => undefined;
       }
     },

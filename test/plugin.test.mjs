@@ -118,8 +118,8 @@ test("bb hotspot episodes and status print bounded text", async () => {
   const status = await harness.runCli(["status"]);
   assert.match(status.stdout, /thermal heavy, CPU 94%/);
   assert.match(status.stdout, /thread  70%  Run the e2e suite/);
-  // Status takes a fresh reading, never a stored one, and reuses it for a few seconds.
-  assert.deepEqual(readings, [{ store: false }]);
+  // Status takes a fresh reading that leaves the live window alone, and reuses it for a few seconds.
+  assert.deepEqual(readings, [{ store: false, peek: true }]);
   await harness.runCli(["status"]);
   assert.equal(readings.length, 1);
   assert.doesNotMatch(status.stdout + episodes.stdout + json.stdout, /thr_aaaaaaaaaa/);
