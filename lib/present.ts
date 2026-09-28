@@ -49,7 +49,7 @@ export function verdict(input: FooterInput & { openSince: number | null }): Verd
       tone: "idle",
       headline: "Waiting for the first reading",
       since: null,
-      detail: "Hotspot checks the Mac once a minute.",
+      detail: "Hotspot checks the Mac every few seconds while BB is on screen, and once a minute otherwise.",
       culprit: null,
       reassurance: null,
     };

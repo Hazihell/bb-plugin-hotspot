@@ -5,7 +5,10 @@
 // culprits), a short badge on its sidebar row while the Mac is hot, the
 // always-visible indicator and popover in the sidebar footer
 // (components/footer-indicator), and an app-wide overlay that turns the
-// server's "episode opened" signal into a toast.
+// server's "episode opened" signal into a toast. One more overlay holds the
+// watch lease while the window is visible, which is what keeps live
+// readings coming; the timeline and hot spells still change only when a
+// sample is stored.
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { definePluginApp, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
@@ -15,7 +18,7 @@ import { FooterIndicator } from "@/components/footer-indicator";
 import { ErrorNote, SkeletonLine, VerdictBlock, thermalSwatch } from "@/components/heat";
 import { MetricsRow } from "@/components/metrics";
 import { TimelineChart } from "@/components/timeline-chart";
-import { useStatus } from "@/hooks/use-status";
+import { useStatus, useWatchLease } from "@/hooks/use-status";
 import { thermalLabel } from "./lib/labels";
 import { clockText, dayClockText, durationText, pct } from "./lib/present";
 import { EPISODE_OPENED, type EpisodeOpenedSignal, SAMPLED } from "./lib/signals";
@@ -299,8 +302,9 @@ function HotspotPage({ subPath }: { subPath: string }) {
 
         <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
           A hot spell starts after three readings in a row with thermal pressure above nominal or CPU at the hot line,
-          and ends after three normal ones. Thread CPU is a share of the whole Mac and comes from <code>ps</code>, which
-          averages over about a minute. Memory is what Activity Monitor calls Memory Used (app, wired and compressed);
+          and ends after three normal ones. Thread CPU is a share of the whole Mac: the CPU time its processes used
+          since the previous reading, every few seconds while BB is on screen. The chart and hot spells use one
+          sample a minute. Memory is what Activity Monitor calls Memory Used (app, wired and compressed);
           it turns amber or red only when macOS reports memory pressure.
         </p>
       </div>
@@ -352,6 +356,12 @@ function HotspotToaster() {
   return null;
 }
 
+/** Mounted once per window; asks for live readings while the window is visible. */
+function WatchLease() {
+  useWatchLease();
+  return null;
+}
+
 export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "hotspot",
@@ -363,4 +373,5 @@ export default definePluginApp((app) => {
   });
   app.slots.experimental_appOverlay({ id: "episode-toasts", component: HotspotToaster });
   app.slots.experimental_appOverlay({ id: "footer-indicator", component: FooterIndicator });
+  app.slots.experimental_appOverlay({ id: "watch-lease", component: WatchLease });
 });
