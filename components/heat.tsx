@@ -5,17 +5,17 @@
 import type { ReactNode } from "react";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import type { Status } from "../lib/contract";
-import type { FooterTone } from "../lib/footer";
+import { type FooterHeat, footerView } from "../lib/footer";
 import { clockText, pct, verdict } from "../lib/present";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 
-/** The footer flame's colours: grey when calm, so only heat draws the eye. */
-export const TONE_FLAME: Record<FooterTone, string> = {
+/** The flame's colour says the heat even when the word is dropped: grey when calm, so only heat draws the eye. */
+export const HEAT_ICON: Record<FooterHeat | "calm", string> = {
   calm: "text-muted-foreground",
-  warm: "text-[var(--warning)]",
-  hot: "text-destructive",
-  idle: "text-muted-foreground/50",
+  Busy: "text-[var(--warning)]",
+  Warm: "text-[var(--warning)]",
+  Hot: "text-destructive",
 };
 
 /** Thermal level as a swatch; always shown beside its name. */
@@ -81,10 +81,15 @@ export function VerdictBlock({
     openSince: status?.open?.startAt ?? null,
   });
   const culprit = view.culprit;
+  // The footer's own rule, so the headline's flame never disagrees with the footer's.
+  const heat =
+    status?.latest == null
+      ? null
+      : footerView({ latest: status.latest, hot: status.open != null, cpuThreshold: status.cpuThreshold }).heat;
   return (
     <div className="min-w-0" role="status" aria-live="polite">
       <div className="flex items-center gap-2.5">
-        <FlameIcon className={cn(TONE_FLAME[view.tone], size === "page" ? "size-5" : "size-4")} />
+        <FlameIcon className={cn(HEAT_ICON[heat ?? "calm"], size === "page" ? "size-5" : "size-4")} />
         <h2
           className={cn(
             "min-w-0 font-semibold text-foreground",

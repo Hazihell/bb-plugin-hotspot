@@ -29,7 +29,7 @@ import { RUNNING_CHANGED, SAMPLED } from "../lib/signals";
 import { emptyList, listRows, nextList } from "../lib/thread-list";
 import { cn } from "../lib/utils";
 import { type StatusState, useStatus } from "../hooks/use-status";
-import { ErrorNote, FlameIcon, SkeletonLine, VerdictBlock, thermalSwatch } from "./heat";
+import { ErrorNote, FlameIcon, HEAT_ICON, SkeletonLine, VerdictBlock, thermalSwatch } from "./heat";
 import { MetricsRow } from "./metrics";
 import { KillConfirm } from "./kill-confirm";
 import { MonitorButton, useOpenMonitor } from "./monitor-button";
@@ -119,13 +119,6 @@ function closeSidebarDrawer(from: Element) {
   toggle?.click();
 }
 
-/** The flame's colour says the heat even when the word is dropped. */
-const HEAT_ICON: Record<FooterHeat | "calm", string> = {
-  calm: "text-muted-foreground",
-  Busy: "text-[var(--warning)]",
-  Warm: "text-[var(--warning)]",
-  Hot: "text-destructive",
-};
 const HEAT_WORD: Record<FooterHeat, string> = {
   Busy: "text-[var(--warning-text)]",
   Warm: "text-[var(--warning-text)]",
