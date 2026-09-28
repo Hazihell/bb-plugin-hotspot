@@ -11,7 +11,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
-import type { Episode, KillPlanView, Overview, rpcContract } from "../lib/contract";
+import type { Episode, KillPlanView, Overview, Status, rpcContract } from "../lib/contract";
 import {
   type FooterHeat,
   type FooterLine,
@@ -24,7 +24,7 @@ import {
 } from "../lib/footer";
 import { bytesText, thermalLabel } from "../lib/labels";
 import { usePortalScopeProps } from "../lib/portal-scope";
-import { cpuText, dayClockText, durationText, pct, threadMeta } from "../lib/present";
+import { cpuText, dayClockText, durationText, pct, splitIdle, threadMeta } from "../lib/present";
 import { SAMPLED } from "../lib/signals";
 import { cn } from "../lib/utils";
 import { type StatusState, useStatus } from "../hooks/use-status";
@@ -312,6 +312,8 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
   const { overview, refetch } = useOverview();
   const [plan, setPlan] = useState<KillPlanView | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [showIdle, setShowIdle] = useState(false);
   const { status } = state;
   const latest = status?.latest ?? null;
 
@@ -344,13 +346,18 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
     return <KillConfirm plan={plan} onDone={() => setPlan(null)} />;
   }
 
-  const threads = latest?.threads.slice(0, 5) ?? [];
+  const { busy: busyThreads, idle: idleThreads } = splitIdle(latest?.threads ?? []);
+  const threads = showIdle ? [...busyThreads, ...idleThreads] : busyThreads;
   const cpuThreshold = status?.cpuThreshold ?? 80;
   const others = latest?.procs.filter((proc) => proc.cpu >= 1).slice(0, 3) ?? [];
+  const threadCount = busyThreads.length + idleThreads.length;
 
+  // Only the thread list scrolls: the verdict and numbers above it and the
+  // hot spells below stay in view however many threads there are. The
+  // phone drawer allows 92dvh, less its handle.
   return (
-    <div className="max-h-[min(38rem,80dvh)] overflow-y-auto text-sm">
-      <div className="space-y-3 p-4 pb-3">
+    <div className="flex max-h-[min(40rem,80dvh)] flex-col text-sm max-md:max-h-[calc(92dvh-3rem)]">
+      <div className="shrink-0 space-y-3 p-4 pb-3">
         {state.error !== null && status === null ? (
           <ErrorNote title="Can't read Hotspot right now" detail={state.error} onRetry={state.retry} />
         ) : (
@@ -362,96 +369,83 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
       </div>
 
       {latest === null ? null : (
-        <Section
-          title="Busiest threads"
-          columns={
-            threads.length === 0 ? null : (
+        <section className="flex min-h-0 flex-1 flex-col border-t border-border pt-3 pb-1.5">
+          <div className="flex shrink-0 items-baseline gap-3 px-4 text-xs font-medium text-muted-foreground">
+            <h3 className="min-w-0 flex-1">Busiest threads</h3>
+            {threads.length === 0 ? null : (
               <>
                 <span className={CPU_COLUMN}>CPU</span>
                 <span className={MEM_COLUMN}>Memory</span>
+                <span aria-hidden="true" className={ACTIONS_COLUMN} />
               </>
-            )
-          }
-        >
-          {threads.length === 0 ? (
-            <Empty>No BB thread is using the CPU.</Empty>
-          ) : (
-            <ul className="divide-y divide-border">
-              {threads.map((thread) => {
-                const title = thread.title ?? thread.threadId;
-                const running = overview === null ? null : overview.running[thread.threadId] === true;
-                // The meta line under the title says why Stop turn is off ("no turn running").
-                const metaId = `hotspot-meta-${thread.threadId}`;
-                return (
-                  <li key={thread.threadId} className="py-2.5">
-                    <div className="flex items-baseline gap-3">
-                      <span className="min-w-0 flex-1 truncate font-medium text-foreground" title={title}>
-                        {title}
-                      </span>
-                      <span
-                        className={cn(
-                          CPU_COLUMN,
-                          "font-medium tabular-nums text-foreground",
-                          thread.cpu >= cpuThreshold && ALERT_TEXT.hot,
-                        )}
-                      >
-                        {cpuText(thread.cpu)}
-                      </span>
-                      <span className={cn(MEM_COLUMN, "tabular-nums text-foreground")}>
-                        {thread.memBytes === null ? "—" : bytesText(thread.memBytes)}
-                      </span>
-                    </div>
-                    <p id={metaId} className="text-xs text-muted-foreground">
-                      {threadMeta(thread.processes, running)}
-                    </p>
-                    <div className="mt-2 flex items-center gap-1.5">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className={cn("h-7 px-2.5", TOUCH)}
-                        onClick={() => {
-                          close();
-                          navigate.toThread(thread.threadId);
-                        }}
-                      >
-                        Open
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className={cn("h-7 px-2.5", TOUCH)}
-                        disabled={running !== true || busy !== null}
-                        aria-describedby={metaId}
-                        onClick={() => stopTurn(thread.threadId, title)}
-                      >
-                        {busy === `stop:${thread.threadId}` ? "Stopping…" : "Stop turn"}
-                      </Button>
-                      {overview?.allowKill === true ? (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className={cn("ml-auto h-7 px-2 text-muted-foreground hover:text-destructive", TOUCH)}
-                          disabled={busy !== null}
-                          onClick={() => planKill(thread.threadId)}
-                        >
-                          {busy === `kill:${thread.threadId}` ? "Checking…" : "Kill processes…"}
-                        </Button>
-                      ) : null}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          {others.length === 0 ? null : (
-            <p className="truncate pb-1 text-xs text-muted-foreground">
-              Also busy outside BB: {others.map((proc) => `${proc.name} ${pct(proc.cpu)}`).join(" · ")}
-            </p>
-          )}
-        </Section>
+            )}
+          </div>
+          <div className="min-h-0 overflow-y-auto px-4 pt-1">
+            {threadCount === 0 ? (
+              <Empty>No BB thread is using the CPU.</Empty>
+            ) : (
+              <ul>
+                {threads.map((thread) => (
+                  <ThreadRow
+                    key={thread.threadId}
+                    thread={thread}
+                    running={overview === null ? null : overview.running[thread.threadId] === true}
+                    hot={thread.cpu >= cpuThreshold}
+                    expanded={expanded === thread.threadId}
+                    onToggle={() => setExpanded((current) => (current === thread.threadId ? null : thread.threadId))}
+                    onOpen={() => {
+                      close();
+                      navigate.toThread(thread.threadId);
+                    }}
+                    busy={busy}
+                    allowKill={overview?.allowKill === true}
+                    onStop={stopTurn}
+                    onKill={planKill}
+                  />
+                ))}
+              </ul>
+            )}
+            {idleThreads.length === 0 ? null : (
+              <button
+                type="button"
+                aria-expanded={showIdle}
+                onClick={() => setShowIdle((value) => !value)}
+                className={cn(
+                  "-mx-2 flex h-8 w-[calc(100%+1rem)] items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted-foreground outline-none hover:bg-state-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring",
+                  TOUCH,
+                )}
+              >
+                <Icon name="ChevronRight" className={cn("size-3.5 transition-transform", showIdle && "rotate-90")} />
+                {showIdle
+                  ? `Hide ${idleThreads.length === 1 ? "the idle thread" : "idle threads"}`
+                  : `${idleThreads.length} idle thread${idleThreads.length === 1 ? "" : "s"}`}
+              </button>
+            )}
+            {others.length === 0 ? null : (
+              <p className="truncate py-1 text-xs text-muted-foreground">
+                Also busy outside BB: {others.map((proc) => `${proc.name} ${pct(proc.cpu)}`).join(" · ")}
+              </p>
+            )}
+          </div>
+        </section>
       )}
 
-      <Section title="Recent hot spells">
+      <Section
+        title="Recent hot spells"
+        columns={
+          <button
+            type="button"
+            onClick={() => {
+              close();
+              navigate.toPluginPanel("hotspot");
+            }}
+            className="-my-1 -mr-1 flex shrink-0 items-center gap-0.5 rounded-md px-1 py-1 font-normal text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring max-md:pointer-coarse:min-h-11"
+          >
+            Full history
+            <Icon name="ChevronRight" className="size-3.5" />
+          </button>
+        }
+      >
         {overview === null ? (
           <div className="space-y-2 py-2">
             <SkeletonLine className="w-3/4" />
@@ -460,8 +454,8 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
         ) : overview.episodes.length === 0 ? (
           <Empty>None recorded. Hotspot will tell you when your Mac starts running hot.</Empty>
         ) : (
-          <ul className="-mx-2">
-            {overview.episodes.map((episode) => (
+          <ul className="-mx-2 pt-1">
+            {overview.episodes.slice(0, 3).map((episode) => (
               <EpisodeRow
                 key={episode.id}
                 episode={episode}
@@ -474,21 +468,118 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
           </ul>
         )}
       </Section>
-
-      <div className="border-t border-border p-2">
-        <Button
-          variant="ghost"
-          className={cn("h-9 w-full justify-between px-2 text-sm font-normal text-muted-foreground hover:text-foreground", TOUCH)}
-          onClick={() => {
-            close();
-            navigate.toPluginPanel("hotspot");
-          }}
-        >
-          See the full history
-          <Icon name="ChevronRight" className="size-4" />
-        </Button>
-      </div>
     </div>
+  );
+}
+
+type ThreadEntry = NonNullable<Status["latest"]>["threads"][number];
+
+/**
+ * One line per thread: the title opens it, then CPU, memory and a "…"
+ * toggle. The toggle unfolds the rest in place (processes, whether a turn
+ * runs, Stop turn and Kill processes…), so the rare actions cost no space
+ * until asked for and Kill stays one step further away than Open.
+ */
+function ThreadRow({
+  thread,
+  running,
+  hot,
+  expanded,
+  onToggle,
+  onOpen,
+  busy,
+  allowKill,
+  onStop,
+  onKill,
+}: {
+  thread: ThreadEntry;
+  /** Null while the overview loads. */
+  running: boolean | null;
+  hot: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+  onOpen: () => void;
+  busy: string | null;
+  allowKill: boolean;
+  onStop: (threadId: string, title: string) => void;
+  onKill: (threadId: string) => void;
+}) {
+  const title = thread.title ?? thread.threadId;
+  const meta = threadMeta(thread.processes, running);
+  const panelId = `hotspot-actions-${thread.threadId}`;
+  // The meta line in the panel says why Stop turn is off ("no turn running").
+  const metaId = `hotspot-meta-${thread.threadId}`;
+  return (
+    <li className={cn("-mx-2 rounded-md", expanded && "bg-muted/60")}>
+      <div className="flex items-center gap-3 pr-0 pl-2">
+        <button
+          type="button"
+          onClick={onOpen}
+          title={`${title}\n${meta}`}
+          className={cn(
+            "group flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-sm text-left font-medium text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            TOUCH,
+          )}
+        >
+          <span className="truncate decoration-muted-foreground/60 underline-offset-4 group-hover:underline">{title}</span>
+          {/* A phone's row has no room for the tag; the unfolded panel says it there. */}
+          {running === true ? (
+            <span className="shrink-0 text-xs font-normal text-muted-foreground max-sm:sr-only">· running</span>
+          ) : null}
+        </button>
+        <span className={cn(CPU_COLUMN, "font-medium tabular-nums text-foreground", hot && ALERT_TEXT.hot)}>
+          {cpuText(thread.cpu)}
+        </span>
+        <span className={cn(MEM_COLUMN, "tabular-nums text-foreground")}>
+          {thread.memBytes === null ? "—" : bytesText(thread.memBytes)}
+        </span>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          aria-label={`Actions for ${title}`}
+          title="Stop turn or kill processes"
+          className={cn(
+            ACTIONS_COLUMN,
+            "grid h-8 place-items-center rounded-md text-muted-foreground outline-none hover:bg-state-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring aria-expanded:text-foreground",
+            TOUCH,
+          )}
+        >
+          <Icon name="Ellipsis" fallback="MoreHorizontal" className="size-4" />
+        </button>
+      </div>
+      {expanded ? (
+        <div id={panelId} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-2 pb-2">
+          <p id={metaId} className="min-w-0 basis-full truncate text-xs text-muted-foreground sm:basis-0 sm:flex-1">
+            {meta}
+          </p>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className={cn("h-7 px-2.5", TOUCH)}
+              disabled={running !== true || busy !== null}
+              aria-describedby={metaId}
+              onClick={() => onStop(thread.threadId, title)}
+            >
+              {busy === `stop:${thread.threadId}` ? "Stopping…" : "Stop turn"}
+            </Button>
+            {allowKill ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className={cn("h-7 px-2 text-muted-foreground hover:text-destructive", TOUCH)}
+                disabled={busy !== null}
+                onClick={() => onKill(thread.threadId)}
+              >
+                {busy === `kill:${thread.threadId}` ? "Checking…" : "Kill processes…"}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </li>
   );
 }
 
@@ -501,18 +592,16 @@ function EpisodeRow({ episode, onOpen }: { episode: Episode; onOpen: () => void 
       <button
         type="button"
         onClick={onOpen}
-        className="flex min-h-10 w-full items-center gap-3 rounded-md px-2 py-1.5 text-left outline-none hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring max-md:pointer-coarse:min-h-12"
+        className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs outline-none hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring max-md:pointer-coarse:h-11"
       >
-        <span className="min-w-0 flex-1">
-          <span className="block text-xs text-foreground">
-            {dayClockText(episode.startAt, now)} ·{" "}
-            {episode.endAt === null ? <span className="text-destructive">still hot</span> : durationText(end - episode.startAt)}
-          </span>
-          <span className="block truncate text-xs text-muted-foreground">
-            {top === null ? "No BB thread to blame" : (top.title ?? top.threadId)}
-          </span>
+        <span className="shrink-0 tabular-nums text-foreground">
+          {dayClockText(episode.startAt, now)} ·{" "}
+          {episode.endAt === null ? <span className="text-destructive">still hot</span> : durationText(end - episode.startAt)}
         </span>
-        <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate text-muted-foreground">
+          {top === null ? "No BB thread to blame" : (top.title ?? top.threadId)}
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
           <span aria-hidden="true" className={cn("size-2 rounded-sm", thermalSwatch(episode.peakThermal))} />
           {thermalLabel(episode.peakThermal)}
         </span>
@@ -525,10 +614,12 @@ function EpisodeRow({ episode, onOpen }: { episode: Episode; onOpen: () => void 
 /** Right-aligned number columns in the threads list, headed in the section title row. */
 const CPU_COLUMN = "w-10 shrink-0 text-right";
 const MEM_COLUMN = "w-16 shrink-0 text-right";
+/** The "…" toggle; 44px wide under a finger. */
+const ACTIONS_COLUMN = "w-8 shrink-0 max-md:pointer-coarse:w-11";
 
 function Section({ title, columns, children }: { title: string; columns?: ReactNode; children: ReactNode }) {
   return (
-    <section className="border-t border-border px-4 pt-3 pb-2">
+    <section className="shrink-0 border-t border-border px-4 pt-3 pb-2">
       <div className="flex items-baseline gap-3 text-xs font-medium text-muted-foreground">
         <h3 className="min-w-0 flex-1">{title}</h3>
         {columns}
