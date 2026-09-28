@@ -75,6 +75,12 @@ export interface Baseline {
    */
   times: Map<string, number | null>;
   /**
+   * Pids this reading saw without a key (on Linux, an unreadable
+   * `/proc/<pid>/stat`). A keyed process at one of these pids later may be
+   * the same process, so it is not counted from zero.
+   */
+  unkeyed: Set<number>;
+  /**
    * Whether `times` is the whole process table. False before the first
    * reading and when `ps` failed, so an absent key says nothing about
    * whether the process is new.
@@ -88,8 +94,8 @@ export const MIN_ELAPSED_MS = 500;
 /**
  * Each row's CPU over the window since `baseline`, in percent of one core:
  * the CPU time it used divided by the wall time between the readings. A
- * process a complete baseline did not see started inside the window (new,
- * or a reused pid), so all its CPU time counts. It keeps `ps`'s own figure
+ * process a complete baseline did not see at all started inside the window
+ * (new, or a reused pid), so all its CPU time counts. It keeps `ps`'s own figure
  * when the baseline is incomplete (the first reading after a load, or a
  * failed `ps`), when its CPU time or start is unknown, and so does every
  * process when the window is too short to measure. No process is credited
@@ -107,16 +113,20 @@ export function cpuSince(
   return rows.map((row) => {
     if (row.key === null || row.cpuMs === null) return row;
     const seen = baseline.times.get(row.key);
-    const before = seen === undefined && baseline.complete ? 0 : seen;
+    const before = seen === undefined && baseline.complete && !baseline.unkeyed.has(row.pid) ? 0 : seen;
     if (before === undefined || before === null || row.cpuMs < before) return row;
     return { ...row, cpuPercent: Math.min(((row.cpuMs - before) / elapsed) * 100, cores * 100) };
   });
 }
 
-function timesOf(rows: readonly ProcessRow[] | null): Map<string, number | null> {
+function baselineOf(rows: readonly ProcessRow[] | null, clockMs: number, ticks: CpuTicks): Baseline {
   const times = new Map<string, number | null>();
-  for (const row of rows ?? []) if (row.key !== null) times.set(row.key, row.cpuMs);
-  return times;
+  const unkeyed = new Set<number>();
+  for (const row of rows ?? []) {
+    if (row.key === null) unkeyed.add(row.pid);
+    else times.set(row.key, row.cpuMs);
+  }
+  return { clockMs, ticks, times, unkeyed, complete: rows !== null };
 }
 
 export interface SamplerOptions {
@@ -168,7 +178,7 @@ export function createSampler(options: SamplerOptions = {}): TakeReading {
   const ticksNow = options.ticks ?? readTicks;
   const cores = options.cores ?? Math.max(1, os.cpus().length);
   // Until the first reading no process has a baseline, so every process falls back to `ps`.
-  const loaded: Baseline = { clockMs: clock(), ticks: ticksNow(), times: new Map(), complete: false };
+  const loaded = baselineOf(null, clock(), ticksNow());
   let live = loaded;
   let stored = loaded;
 
@@ -184,7 +194,7 @@ export function createSampler(options: SamplerOptions = {}): TakeReading {
         return null;
       }),
     ]);
-    const now: Baseline = { clockMs: clock(), ticks: ticksNow(), times: timesOf(rows), complete: rows !== null };
+    const now = baselineOf(rows, clock(), ticksNow());
     const load = loadPerCore(cores);
 
     const measure = (since: Baseline): Sample => {

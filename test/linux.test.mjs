@@ -119,3 +119,26 @@ test("a Linux source without /proc stat still samples, on ps pcpu alone", async 
   const { live } = await takeReading(2, { store: false });
   assert.deepEqual(live.threads.map((entry) => [entry.threadId, entry.cpu]), [["thr_aaaaaaaaaa", 92.5], ["thr_bbbbbbbbbb", 9]]);
 });
+
+test("a process whose /proc stat was unreadable at the baseline is not counted from zero later", async () => {
+  let statReadable = false;
+  const { source } = linuxSource({
+    async readStat(pid) {
+      return statReadable ? (STATS[pid] ?? null) : null;
+    },
+  });
+  let now = 0;
+  const takeReading = createSampler({
+    processes: source,
+    thermal: async () => null,
+    memory: linuxMemory,
+    cores: 1,
+    clock: () => (now += 2_000),
+  });
+  await takeReading(1, { store: false });
+  await takeReading(2, { store: false });
+  statReadable = true;
+  // pid 200 now shows 3 s of CPU time, all of it from before; ps's 12.5 (plus its child's 80) stands.
+  const { live } = await takeReading(3, { store: false });
+  assert.deepEqual(live.threads.map((entry) => [entry.threadId, entry.cpu]), [["thr_aaaaaaaaaa", 92.5], ["thr_bbbbbbbbbb", 9]]);
+});
