@@ -17,7 +17,8 @@
  * owned by this user, and is none of: BB itself, the thread's agent (the
  * provider CLI BB launched), the plugin's own process chain, a system binary,
  * or an app bundle. A process that is the parent of any of those is also
- * spared, so the shell running `bb hotspot kill` survives its own command.
+ * spared, so the shell running `bb hotspot kill` survives its own command, and
+ * so is the rest of the command a `bb` CLI call belongs to (`bb … | head`).
  */
 import { attributeThreads, type ProcessRow, type ProcessSource, processName, splitEnvironment, threadIdFrom } from "./procs";
 
@@ -139,6 +140,16 @@ export function planKill(rows: readonly KillRow[], threadId: string, context: Pl
   for (const row of members) {
     const reason = protection(row, byPid, owner, threadId, context);
     if (reason !== null) reasons.set(row.pid, reason);
+  }
+  // A `bb` CLI call inside the thread: the other processes its shell runs
+  // are the same command (a pipeline), not work to stop.
+  for (const row of members) {
+    if (!isBbProcess(row) || context.selfPids.has(row.pid)) continue;
+    for (const sibling of members) {
+      if (sibling.ppid === row.ppid && sibling.pid !== row.pid && !reasons.has(sibling.pid)) {
+        reasons.set(sibling.pid, "part of the same command as a bb CLI call");
+      }
+    }
   }
   // Killing a parent can take its child with it: spare every thread process
   // above a protected one.

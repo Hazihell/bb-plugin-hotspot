@@ -30,8 +30,9 @@ function table(overrides = {}) {
     312: line(312, 311, "node /Users/me/app/node_modules/next/dist/server/worker.js", { cpu: 20 }),
     313: line(313, 310, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless=new --remote-debugging-port=9222", { cpu: 10 }),
     // The foreground tool shell running `bb hotspot kill` itself.
-    320: line(320, 300, "/bin/zsh -c bb hotspot kill thr_target0001"),
+    320: line(320, 300, "/bin/zsh -c bb hotspot kill thr_target0001 | head"),
     321: line(321, 320, BB_CLI),
+    322: line(322, 320, "head -c 2500"),
     // A shell that opened the user's editor and ran a system tool and sudo.
     330: line(330, 300, "/bin/zsh -c code ."),
     331: line(331, 330, "/Applications/Visual Studio Code.app/Contents/MacOS/Electron ."),
@@ -78,6 +79,7 @@ test("never selects the agent, BB, the calling shell, other users, system or app
   assert.match(reasons[300], /agent/);
   assert.match(reasons[321], /BB itself/);
   assert.match(reasons[320], /parent of a protected process/);
+  assert.match(reasons[322], /same command as a bb CLI call/);
   assert.match(reasons[331], /an app/);
   assert.match(reasons[330], /parent of a protected process/);
   assert.match(reasons[341], /system/);
