@@ -9,7 +9,8 @@
  * byte formatting are gone (Hotspot never touches a process). `ps` also
  * prints each process's environment (`-E`), because BB exports
  * `BB_THREAD_ID` to every agent it launches and almost nothing else carries
- * the id. A process with no id of its own inherits its nearest ancestor's, so
+ * the id. A bare `thr_…` anywhere in argv no longer counts, only a worktree
+ * path. A process with no id of its own inherits its nearest ancestor's, so
  * a compiler forked by an agent is billed to that agent's thread. Rows are
  * ranked by CPU, not memory.
  */
@@ -57,16 +58,39 @@ export function processName(command: string): string {
 }
 
 /**
- * The BB thread a process names, if any.
+ * Split a `ps -E` command line into argv and the environment appended to it.
  *
- * `BB_THREAD_ID=` in the environment wins: it records which thread launched
- * the process tree. Otherwise BB names every worktree after the thread that
- * owns it, so a path in argv carries the id.
+ * The environment starts at the first space followed by `NAME=`. An argv
+ * token shaped like `key=value` is taken for the start of the environment,
+ * which only costs a worktree path that comes after it.
  */
+export function splitEnvironment(command: string): { argv: string; env: string } {
+  const boundary = /\s(?=[A-Za-z_][A-Za-z0-9_]*=)/.exec(command);
+  if (boundary === null) return { argv: command, env: "" };
+  return { argv: command.slice(0, boundary.index), env: command.slice(boundary.index + 1) };
+}
+
+const ENV_THREAD = /(?:^|[\s\0])BB_THREAD_ID=(thr_[a-z0-9]{8,})(?![a-z0-9])/;
+/** A thread id as a path segment directly under a BB worktree or workspace directory. */
+const WORKTREE_THREAD = /\/(?:worktrees|workspaces)\/(thr_[a-z0-9]{8,})(?:-\d+)?(?=\/|\s|$)/;
+
+/**
+ * The BB thread a process names itself, if any.
+ *
+ * `BB_THREAD_ID` in the process's own environment wins: BB exports it to
+ * every agent it launches, and children inherit it. Otherwise only a
+ * worktree path in argv counts (BB names each worktree after its thread). A
+ * bare `thr_…` in argv (`grep thr_x`) or a path in some other variable
+ * (`PWD`, `OLDPWD`) names nothing.
+ */
+export function threadIdFrom(argv: string, env: string): string | null {
+  return ENV_THREAD.exec(env)?.[1] ?? WORKTREE_THREAD.exec(argv)?.[1] ?? null;
+}
+
+/** The thread a `ps -E` command line names (argv and environment together). */
 export function parseThreadId(command: string): string | null {
-  const fromEnv = /\bBB_THREAD_ID=(thr_[a-z0-9]{8,})\b/.exec(command);
-  if (fromEnv !== null) return fromEnv[1];
-  return /\b(thr_[a-z0-9]{8,})\b/.exec(command)?.[1] ?? null;
+  const { argv, env } = splitEnvironment(command);
+  return threadIdFrom(argv, env);
 }
 
 /** One line of `ps -axE -o pid=,ppid=,pcpu=,command=`. */

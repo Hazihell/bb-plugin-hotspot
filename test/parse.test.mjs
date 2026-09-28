@@ -31,13 +31,27 @@ test("parseThreadId prefers BB_THREAD_ID from the environment", () => {
   assert.equal(parseThreadId(command), "thr_bbbbbbbbbb");
 });
 
-test("parseThreadId falls back to a worktree path and ignores short ids", () => {
+test("parseThreadId falls back to a worktree or workspace path in argv", () => {
   assert.equal(
-    parseThreadId("node /Users/me/.bb/worktrees/thr_cyjs4d8nvp-1/ui/tsc --watch"),
+    parseThreadId("node /Users/me/.bb/plugins/prepared-worktree/host-data/worktrees/thr_cyjs4d8nvp-1/ui/tsc --watch"),
     "thr_cyjs4d8nvp",
+  );
+  assert.equal(
+    parseThreadId("node /Users/me/.bb/plugins/env/host-data/workspaces/thr_7fryv3rwfg HOME=/Users/me"),
+    "thr_7fryv3rwfg",
   );
   assert.equal(parseThreadId("node BB_THREAD_ID=thr_ HOME=/x"), null);
   assert.equal(parseThreadId("/sbin/launchd"), null);
+});
+
+test("a bare thr_ id in argv or a worktree path in another variable names no thread", () => {
+  assert.equal(parseThreadId("ugrep -I thr_abcdefghij TERM=xterm"), null);
+  assert.equal(parseThreadId("/bin/zsh -c echo thr_abcdefghij"), null);
+  assert.equal(
+    parseThreadId("/bin/zsh TERM=xterm PWD=/x/worktrees/thr_abcdefghij OLDPWD=/x/workspaces/thr_bcdefghijk"),
+    null,
+  );
+  assert.equal(parseThreadId("/usr/bin/cat /x/worktrees/thr_abcdefghijXYZ/f"), null);
 });
 
 test("processName keeps spaces in app paths and stops at the environment", () => {
