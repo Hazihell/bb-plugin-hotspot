@@ -64,6 +64,7 @@ test("parses pid, uid, start time, argv and the thread from a ps -E line", () =>
     startedAt: START,
     argv: "node next dev",
     name: "node next dev",
+    label: "node · next dev",
     threadId: THREAD,
   });
   assert.equal(parseKillLine("garbage"), null);
@@ -268,7 +269,7 @@ test("a Homebrew terminal opened from a thread is a wall, and so is tmux", () =>
   assert.match(reasons[800], /a terminal/);
   assert.match(reasons[801], /under alacritty \(pid 800\)/);
   assert.match(reasons[810], /a terminal/);
-  assert.match(reasons[812], /under -zsh \(pid 811\)/);
+  assert.match(reasons[812], /under zsh \(pid 811\)/);
   assert.match(reasons[820], /a terminal/);
 });
 

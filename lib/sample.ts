@@ -24,7 +24,6 @@ import {
   topUnattributed,
 } from "./procs";
 import { type MemorySource, readMemory, systemMemorySource } from "./memory";
-import { friendlyName } from "./proc-name";
 import type { Memory, Sample } from "./schemas";
 import { readThermal } from "./thermal";
 
@@ -230,7 +229,7 @@ export function createSampler(options: SamplerOptions = {}): TakeReading {
         (byThread.get(threadId) ?? [])
           .sort((a, b) => b.cpuPercent - a.cpuPercent || b.rssBytes - a.rssBytes)
           .slice(0, TOP_PROCESSES_PER_THREAD)
-          .map((row) => ({ pid: row.pid, name: friendlyName(row.argv), cpu: round(row.cpuPercent / cores), memBytes: row.rssBytes }));
+          .map((row) => ({ pid: row.pid, name: row.label, cpu: round(row.cpuPercent / cores), memBytes: row.rssBytes }));
       return {
         at,
         thermal,

@@ -1,7 +1,7 @@
 /**
  * Read-side shaping shared by the page, the CLI and the agent tool.
  */
-import { bytesText, thermalLabel } from "./labels";
+import { CULPRIT_PROCS, bytesText, thermalLabel } from "./labels";
 import type { KillPlanView, KillResultView } from "./contract";
 import type { BbTotal, EpisodeView, Memory, Sample, SampleView, TimelinePoint } from "./schemas";
 
@@ -151,7 +151,7 @@ export function describeEpisode(episode: EpisodeView, culpritLimit: number): str
     lines.push(
       `  ${index + 1}. ${threadName(culprit)}  avg ${pct(culprit.cpuSum / samples)}, peak ${pct(culprit.peakCpu)}, in ${culprit.samples}/${episode.samples} hot samples`,
     );
-    const procs = (culprit.procs ?? []).slice(0, 3);
+    const procs = (culprit.procs ?? []).slice(0, CULPRIT_PROCS);
     if (procs.length > 0) {
       lines.push(`     processes: ${procs.map((proc) => `${proc.name} avg ${pct(proc.cpuSum / samples)}`).join(", ")}`);
     }

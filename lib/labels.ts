@@ -16,3 +16,6 @@ export function bytesText(bytes: number): string {
   if (gb >= 0.995) return `${gb.toFixed(1)} GB`;
   return `${Math.max(0, Math.round(bytes / 1024 ** 2))} MB`;
 }
+
+/** Processes a hot spell keeps and shows per culprit thread. */
+export const CULPRIT_PROCS = 3;

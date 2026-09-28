@@ -25,6 +25,7 @@
  * `bb hotspot kill` survives its own command, and so is the rest of the
  * command a `bb` CLI call belongs to (`bb … | head`).
  */
+import { friendlyName } from "./proc-name";
 import { attributeThreads, isBbCommand, type ProcessRow, type ProcessSource, processName, splitEnvironment, threadIdFrom } from "./procs";
 
 /** A `ps` row with what identity and ownership checks need; the kill `ps` reads no memory or CPU time. */
@@ -58,6 +59,7 @@ export function parseKillLine(line: string, environ?: string | null): KillRow | 
     startedAt: match[6].replace(/\s+/g, " "),
     argv: argv.trim(),
     name: processName(argv),
+    label: friendlyName(argv),
     threadId: threadIdFrom(argv, env),
   };
 }
@@ -110,7 +112,9 @@ export interface PlanContext {
 export interface KillTarget {
   pid: number;
   ppid: number;
+  /** The safe display name (KillRow.label). */
   name: string;
+  /** Identity for re-validation only; never shown (see displayCommand). */
   argv: string;
   startedAt: string;
   cpuPercent: number;
@@ -118,6 +122,7 @@ export interface KillTarget {
 
 export interface KillExclusion {
   pid: number;
+  /** The safe display name (KillRow.label). */
   name: string;
   cpuPercent: number;
   reason: string;
@@ -290,8 +295,8 @@ export function planKill(rows: readonly KillRow[], threadId: string, context: Pl
   for (const row of rows) {
     const wall = owners.get(row.pid)?.wall ?? null;
     if (wall === null || attribution.get(row.pid) !== threadId) continue;
-    const reason = wall === row ? (wallReason(row, context) ?? "") : `under ${wall.name} (pid ${wall.pid}), which the thread does not own`;
-    shadowed.push({ pid: row.pid, name: row.name, cpuPercent: row.cpuPercent, reason });
+    const reason = wall === row ? (wallReason(row, context) ?? "") : `under ${wall.label} (pid ${wall.pid}), which the thread does not own`;
+    shadowed.push({ pid: row.pid, name: row.label, cpuPercent: row.cpuPercent, reason });
   }
   // A `bb` CLI call inside the thread: the other processes its shell runs
   // are the same command (a pipeline), not work to stop.
@@ -332,7 +337,7 @@ export function planKill(rows: readonly KillRow[], threadId: string, context: Pl
     .map(({ row }) => ({
       pid: row.pid,
       ppid: row.ppid,
-      name: row.name,
+      name: row.label,
       argv: row.argv,
       startedAt: row.startedAt,
       cpuPercent: row.cpuPercent,
@@ -340,7 +345,7 @@ export function planKill(rows: readonly KillRow[], threadId: string, context: Pl
   const excluded = [
     ...members
       .filter((row) => reasons.has(row.pid))
-      .map((row) => ({ pid: row.pid, name: row.name, cpuPercent: row.cpuPercent, reason: reasons.get(row.pid) ?? "" })),
+      .map((row) => ({ pid: row.pid, name: row.label, cpuPercent: row.cpuPercent, reason: reasons.get(row.pid) ?? "" })),
     ...shadowed,
   ];
   return { threadId, targets, excluded };

@@ -765,16 +765,19 @@ type ThreadProcess = NonNullable<ThreadEntry["top"]>[number];
  * An unfolded row's busiest processes, in the list's CPU and memory
  * columns. Display only: kill still plans from the whole thread. Like the
  * list around it, it holds still while unfolded: the processes and their
- * order are the ones shown at unfold, and only the numbers change. One that
+ * order are the first ones seen after unfolding, and only the numbers change. One that
  * leaves the reading keeps its row with CPU "—" and its last memory.
  */
 function ProcessList({ thread, present }: { thread: ThreadEntry; present: boolean }) {
   const top = thread.top ?? [];
-  const [pids] = useState(() => top.map((proc) => proc.pid));
+  // Fixed on the first render that has processes: a reading from before a
+  // reload, or a stored sample, carries none.
+  const [pids, setPids] = useState<number[] | null>(null);
+  if (pids === null && top.length > 0) setPids(top.map((proc) => proc.pid));
   const lastSeen = useRef(new Map<number, ThreadProcess>());
   for (const proc of top) lastSeen.current.set(proc.pid, proc);
   const inReading = new Set(present ? top.map((proc) => proc.pid) : []);
-  if (pids.length === 0) return null;
+  if (pids === null) return null;
   return (
     <ul aria-label={`Busiest processes in ${thread.title ?? thread.threadId}`} className="pb-1">
       {pids.map((pid) => {

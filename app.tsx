@@ -20,7 +20,7 @@ import { MetricsRow } from "@/components/metrics";
 import { MonitorButton, useOpenMonitor } from "@/components/monitor-button";
 import { TimelineChart } from "@/components/timeline-chart";
 import { useStatus, useWatchLease } from "@/hooks/use-status";
-import { bytesText, thermalLabel } from "./lib/labels";
+import { CULPRIT_PROCS, bytesText, thermalLabel } from "./lib/labels";
 import { bbTotalTitle, clockText, cpuText, dayClockText, durationText, pct } from "./lib/present";
 import { EPISODE_OPENED, type EpisodeOpenedSignal, SAMPLED } from "./lib/signals";
 import { Button } from "@/components/ui/button";
@@ -98,7 +98,7 @@ function EpisodeDetail({ episode, intervalMs }: { episode: Episode; intervalMs: 
                   {(culprit.procs ?? []).length === 0 ? null : (
                     <span className="block truncate text-xs tabular-nums text-muted-foreground">
                       {(culprit.procs ?? [])
-                        .slice(0, 3)
+                        .slice(0, CULPRIT_PROCS)
                         .map((proc) => `${proc.name} avg ${pct(proc.cpuSum / Math.max(1, episode.samples))}`)
                         .join(" · ")}
                     </span>

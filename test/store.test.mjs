@@ -149,3 +149,41 @@ test("the BB total round-trips, and rows stored before its migration read back w
   store.addSample(sample(2_000, { bb: BB }));
   assert.deepEqual(store.latest(), sample(2_000, { bb: BB }));
 });
+
+test("the naming migration clears stored process names that may hold arguments, and nothing else", () => {
+  const db = new Database(":memory:");
+  for (const statement of MIGRATIONS.slice(0, 7)) db.exec(statement);
+  const culprit = {
+    threadId: "thr_aaaaaaaaaa", cpuSum: 100, samples: 2, peakCpu: 60,
+    procs: [{ name: "yarn · hunter2", cpuSum: 90, samples: 2, peakCpu: 50 }],
+  };
+  const others = [{ name: "mytool hunter2", cpuSum: 40, samples: 2 }];
+  db.prepare(
+    `INSERT INTO episodes (start_at, end_at, last_hot_at, peak_thermal, peak_cpu, samples, culprits, others)
+     VALUES (0, 60000, 60000, 1, 90, 2, ?, ?)`,
+  ).run(JSON.stringify([culprit]), JSON.stringify(others));
+  db.prepare(`INSERT INTO samples (at, thermal, cpu, load, threads, procs) VALUES (1000, 0, 10, 0.2, '[]', ?)`).run(
+    JSON.stringify([{ pid: 9, name: "mytool hunter2", cpu: 40 }]),
+  );
+  const episode = { id: 1, startAt: 0, endAt: null, lastHotAt: 0, peakThermal: 1, peakCpu: 90, samples: 2, culprits: [culprit], others };
+  db.prepare(`INSERT INTO state (key, value) VALUES ('detector', ?)`).run(
+    JSON.stringify({ streak: { ...episode, id: null }, open: episode, normalStreak: 0, lastAt: 0, lastIntervalMs: 60000 }),
+  );
+  for (const statement of MIGRATIONS.slice(7)) db.exec(statement);
+
+  const dump = JSON.stringify([
+    db.prepare("SELECT * FROM episodes").all(),
+    db.prepare("SELECT * FROM samples").all(),
+    db.prepare("SELECT * FROM state").all(),
+  ]);
+  assert.doesNotMatch(dump, /hunter2/);
+  const store = createStore(db);
+  const [read] = store.episodes(0, DAY_MS, 5);
+  assert.deepEqual(read.culprits, [{ threadId: "thr_aaaaaaaaaa", cpuSum: 100, samples: 2, peakCpu: 60, procs: null }]);
+  assert.deepEqual(read.others, []);
+  assert.deepEqual(store.latest().procs, []);
+  const state = store.detectorState();
+  assert.equal(state.open.culprits[0].cpuSum, 100);
+  assert.equal(state.open.culprits[0].procs, undefined);
+  assert.deepEqual(state.streak.others, []);
+});

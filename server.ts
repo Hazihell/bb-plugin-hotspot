@@ -31,6 +31,7 @@ import {
 } from "./lib/contract";
 import { type KillPlan, type KillRow, type PlanContext, type Signal, applyKill, checkInteractiveCaller, planKill, readKillRows } from "./lib/kill";
 import { type MonitorRunner, findMonitor, openMonitor, systemMonitorRunner } from "./lib/monitor";
+import { displayCommand } from "./lib/proc-name";
 import { systemProcessSource } from "./lib/procs";
 import { type DetectorState, type Episode, restoreState, step } from "./lib/episodes";
 import {
@@ -419,7 +420,7 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
         pid: target.pid,
         name: target.name,
         cpu: machineShare(target.cpuPercent),
-        command: target.argv.slice(0, 300),
+        command: displayCommand(target.argv),
       })),
       excluded: plan.excluded.map((entry) => ({
         pid: entry.pid,

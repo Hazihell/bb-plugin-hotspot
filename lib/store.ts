@@ -48,6 +48,23 @@ export const MIGRATIONS = [
   `ALTER TABLE samples ADD COLUMN memory TEXT`,
   // BB's total and its app/threads split, as JSON. Older rows keep NULL.
   `ALTER TABLE samples ADD COLUMN bb TEXT`,
+  // Process names written before lib/proc-name.ts named every process by
+  // allowlist could hold command-line arguments. Clear them: each culprit's
+  // process list (`procs`), each episode's outside-BB list (`others`), each
+  // sample's outside-BB list (`procs`), and the same in the detector's open
+  // episode and streak. Thread ids, CPU and memory stay.
+  `UPDATE episodes SET
+     culprits = (SELECT json_group_array(json_remove(value, '$.procs')) FROM json_each(episodes.culprits)),
+     others = '[]'`,
+  `UPDATE samples SET procs = '[]'`,
+  `UPDATE state SET value = json_set(value,
+     '$.open.culprits', (SELECT json_group_array(json_remove(c.value, '$.procs')) FROM json_each(state.value, '$.open.culprits') c),
+     '$.open.others', json('[]'))
+   WHERE key = 'detector' AND json_type(value, '$.open') = 'object'`,
+  `UPDATE state SET value = json_set(value,
+     '$.streak.culprits', (SELECT json_group_array(json_remove(c.value, '$.procs')) FROM json_each(state.value, '$.streak.culprits') c),
+     '$.streak.others', json('[]'))
+   WHERE key = 'detector' AND json_type(value, '$.streak') = 'object'`,
 ];
 
 export const DAY_MS = 86_400_000;

@@ -84,7 +84,7 @@ function runTool(harness, params) {
 test("the plugin loads in the fake host with one sampler service", async () => {
   const { harness } = await loadWithEpisode();
   assert.deepEqual(harness.registrations.services.map((entry) => entry.name), ["sampler"]);
-  assert.equal(MIGRATIONS.length, 7);
+  assert.equal(MIGRATIONS.length, 11);
 });
 
 test("hotspot_history names the culprit thread for a window", async () => {

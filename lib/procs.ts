@@ -23,6 +23,10 @@ import { exec } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 
+import { friendlyName, processName } from "./proc-name";
+
+export { processName } from "./proc-name";
+
 const run = promisify(exec);
 
 /** Where the process table comes from; injected so tests can fake any OS. */
@@ -83,7 +87,14 @@ export interface ProcessRow {
    * process; null when the start time is unknown.
    */
   key: string | null;
+  /**
+   * argv[0]'s basename, for the rules that recognise BB, terminals and
+   * shells. It may hold more of the command line, so it is never shown:
+   * every name shown, stored or returned is `label`.
+   */
   name: string;
+  /** The safe display name (lib/proc-name.ts, friendlyName). */
+  label: string;
   /** The thread named by this process itself (environment or argv). */
   threadId: string | null;
   /** One of BB's own processes (isBbCommand). */
@@ -98,33 +109,6 @@ export interface ThreadCpu {
   /** Resident memory summed over the thread's processes, in bytes. */
   rssBytes: number;
   processCount: number;
-}
-
-/**
- * argv[0] and the rest of the command line. `ps` joins argv (and, with -E,
- * the environment) with spaces, and executables on macOS have spaces in
- * their paths, so there is no lossless split. argv[0] ends at the first
- * space that starts something recognisably *not* part of a path: a flag,
- * another absolute path, or a `VAR=value`.
- */
-export function splitArgv0(command: string): { argv0: string; rest: string } {
-  const boundary = /\s(?=[-/]|\S*=)/.exec(command);
-  if (boundary === null) return { argv0: command.trim(), rest: "" };
-  return { argv0: command.slice(0, boundary.index).trim(), rest: command.slice(boundary.index + 1).trim() };
-}
-
-/**
- * Basename of argv[0], with the macOS app-bundle tail preferred.
- *
- * `/Applications/bb.app/Contents/MacOS/bb Helper (Renderer)` should read as
- * "bb Helper (Renderer)", not as the path, and `/opt/homebrew/.../bin/node`
- * should read as "node".
- */
-export function processName(command: string): string {
-  const { argv0 } = splitArgv0(command);
-  const base = (argv0.split("/").pop() ?? argv0).trim();
-  // `next-server (v16.3.4)` — the version is noise in a label.
-  return base.replace(/\s*\([^)]*\)\s*$/, "") || argv0;
 }
 
 /**
@@ -210,6 +194,7 @@ export function parsePsLine(line: string): ProcessRow | null {
     cpuMs: parseCpuTime(match[5]),
     key: `${match[1]}@${match[6].replace(/\s+/g, " ")}`,
     name,
+    label: friendlyName(argv),
     threadId: parseThreadId(command),
     bb: isBbCommand(argv, name),
     argv,
@@ -256,6 +241,7 @@ export async function readProcesses(
         cpuMs: times?.cpuMs ?? null,
         key: times === null ? null : `${pid}@${times.started}`,
         name: processName(argv),
+        label: friendlyName(argv),
         threadId: threadIdFrom(argv, env),
         bb: isBbCommand(argv, processName(argv)),
         argv,
@@ -337,7 +323,7 @@ export function topUnattributed(
     .filter((row) => (attribution.get(row.pid) ?? null) === null && row.cpuPercent > 0)
     .sort((a, b) => b.cpuPercent - a.cpuPercent)
     .slice(0, limit)
-    .map((row) => ({ pid: row.pid, name: row.name, cpuPercent: row.cpuPercent }));
+    .map((row) => ({ pid: row.pid, name: row.label, cpuPercent: row.cpuPercent }));
 }
 
 /** CPU (percent of one core), resident memory and process count over a set of processes. */

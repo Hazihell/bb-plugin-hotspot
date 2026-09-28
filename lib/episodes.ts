@@ -8,6 +8,7 @@
  * over the episode's hot samples, so a thread that burned hard for the whole
  * episode outranks one that spiked once.
  */
+import { CULPRIT_PROCS } from "./labels";
 import {
   type CulpritProcess,
   type DetectorState,
@@ -51,9 +52,8 @@ export interface StepResult {
 }
 
 export const MAX_CULPRITS = 50;
-/** Process names kept per culprit while an episode is open, and once it closes. */
+/** Process names kept per culprit while an episode is open; CULPRIT_PROCS once it closes. */
 export const OPEN_CULPRIT_PROCS = 20;
-export const CULPRIT_PROCS = 3;
 
 export function initialState(): DetectorState {
   return { streak: null, open: null, normalStreak: 0, lastAt: null, lastIntervalMs: null };
