@@ -110,10 +110,20 @@ export function absorb(episode: Episode, sample: Sample): Episode {
     peakThermal,
     peakCpu: Math.max(episode.peakCpu, sample.cpu),
     samples: episode.samples + 1,
-    culprits: [...culprits.values()]
-      .sort((a, b) => b.cpuSum - a.cpuSum)
-      .slice(0, MAX_CULPRITS),
-    others: [...others.values()].sort((a, b) => b.cpuSum - a.cpuSum).slice(0, MAX_CULPRITS),
+    // Kept whole while open: trimming here would throw away a late-rising
+    // thread's CPU each time it fell below the cut. finish() trims once.
+    culprits: [...culprits.values()].sort((a, b) => b.cpuSum - a.cpuSum),
+    others: [...others.values()].sort((a, b) => b.cpuSum - a.cpuSum),
+  };
+}
+
+/** Close an episode at its last hot sample and keep its top culprits. */
+export function finish(episode: Episode): Episode {
+  return {
+    ...episode,
+    endAt: episode.lastHotAt,
+    culprits: episode.culprits.slice(0, MAX_CULPRITS),
+    others: episode.others.slice(0, MAX_CULPRITS),
   };
 }
 
@@ -124,7 +134,7 @@ export function step(state: DetectorState, sample: Sample, config: DetectorConfi
   let closed: Episode | null = null;
 
   if (state.lastAt !== null && sample.at - state.lastAt > maxGapMs(state, config)) {
-    if (open !== null) closed = { ...open, endAt: open.lastHotAt };
+    if (open !== null) closed = finish(open);
     open = null;
     streak = null;
     normalStreak = 0;
@@ -139,7 +149,7 @@ export function step(state: DetectorState, sample: Sample, config: DetectorConfi
     } else {
       normalStreak += 1;
       if (normalStreak >= config.closeAfter) {
-        closed = { ...open, endAt: open.lastHotAt };
+        closed = finish(open);
         open = null;
         normalStreak = 0;
       }

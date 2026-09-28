@@ -178,3 +178,21 @@ test("state from before lastIntervalMs existed still parses", async () => {
   const state = restoreState({ streak: null, open: null, normalStreak: 0, lastAt: 5 });
   assert.deepEqual(state, { streak: null, open: null, normalStreak: 0, lastAt: 5, lastIntervalMs: null });
 });
+
+test("culprits are trimmed only when the episode closes", async () => {
+  const { MAX_CULPRITS } = await import("../lib/episodes.ts");
+  // Sixty threads each burn once; then a late riser that started last
+  // accumulates past all of them. Its early CPU must not be lost to a trim.
+  const crowd = Array.from({ length: 60 }, (_, index) =>
+    hot(index, [thread(`thr_crowd${String(index).padStart(6, "0")}`, 5 + index / 100)]),
+  );
+  const riser = (minute) => hot(minute, [thread("thr_lateriser", 3)]);
+  const { state } = run([...crowd, riser(60), riser(61), riser(62)]);
+  assert.equal(state.open.culprits.length, 61);
+  assert.equal(state.open.culprits.find((entry) => entry.threadId === "thr_lateriser").cpuSum, 9);
+
+  const { events } = run([...crowd, riser(60), riser(61), cool(62), cool(63), cool(64)]);
+  const closed = events.find(([kind]) => kind === "closed")[2];
+  assert.equal(closed.culprits.length, MAX_CULPRITS);
+  assert.equal(closed.endAt, 61 * MINUTE);
+});
