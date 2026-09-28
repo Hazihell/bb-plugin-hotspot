@@ -62,7 +62,7 @@ function runTool(harness, params) {
 test("the plugin loads in the fake host with one sampler service", async () => {
   const { harness } = await loadWithEpisode();
   assert.deepEqual(harness.registrations.services.map((entry) => entry.name), ["sampler"]);
-  assert.equal(MIGRATIONS.length, 3);
+  assert.equal(MIGRATIONS.length, 4);
 });
 
 test("hotspot_history names the culprit thread for a window", async () => {
@@ -99,4 +99,14 @@ test("bb hotspot episodes and status print bounded text", async () => {
 
   const bad = await harness.runCli(["episodes", "--limit", "500"]);
   assert.notEqual(bad.exitCode, 0);
+});
+
+test("detector state kept in KV by an earlier build is adopted once and the key removed", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "hotspot" });
+  const streak = { id: null, startAt: 1, endAt: null, lastHotAt: 1, peakThermal: 1, peakCpu: 50, samples: 2, culprits: [], others: [] };
+  await bb.storage.kv.set("detector", { streak, open: null, normalStreak: 0, lastAt: 1 });
+  await plugin(bb);
+  assert.equal((await bb.storage.kv.get("detector")) ?? null, null);
+  assert.deepEqual(createStore(bb.storage.database()).detectorState().streak, streak);
+  assert.equal(harness.registrations.services.length, 1);
 });

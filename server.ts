@@ -38,7 +38,8 @@ const TITLE_TTL_MS = 10 * 60_000;
 /** Consecutive hot samples that open an episode, and normal ones that close it. */
 const OPEN_AFTER = 3;
 const CLOSE_AFTER = 3;
-const DETECTOR_KEY = "detector";
+/** Where earlier builds kept the detector state, before it moved into SQLite. */
+const LEGACY_DETECTOR_KEY = "detector";
 /** Window and bucket count per timeline range: 5-minute and 30-minute buckets. */
 const RANGE_SPECS: Record<Range, { spanMs: number; buckets: number }> = {
   "24h": { spanMs: DAY_MS, buckets: 288 },
@@ -135,31 +136,36 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  // The detector's streak survives reloads in KV; the episodes themselves
-  // live in SQLite, and the open one is rewritten there after every sample.
-  let detector: DetectorState = restoreState(await bb.storage.kv.get<unknown>(DETECTOR_KEY));
+  // The detector's state lives in SQLite beside the episodes and is written
+  // in the same transaction. Builds before that kept it in KV: read it from
+  // there once, then drop the key.
+  const legacy = await bb.storage.kv.get<unknown>(LEGACY_DETECTOR_KEY);
+  let detector: DetectorState = restoreState(store.detectorState() ?? legacy);
+  if (legacy !== null && legacy !== undefined) {
+    store.saveDetectorState(detector);
+    await bb.storage.kv.delete(LEGACY_DETECTOR_KEY);
+  }
 
   async function record(at: number): Promise<void> {
     const { sampleIntervalSeconds, cpuThreshold } = await settings.get();
     const sample = await takeSample(at);
-    store.addSample(sample);
     const result = step(detector, sample, {
       cpuThreshold,
       openAfter: OPEN_AFTER,
       closeAfter: CLOSE_AFTER,
       maxGapMs: sampleIntervalSeconds * 1_000 * 3,
     });
-    let open = result.state.open;
-    if (result.closed !== null) {
-      const closed = store.saveEpisode(result.closed);
+    const { closed, open, state } = store.commitStep({
+      sample,
+      closed: result.closed,
+      updated: result.updated,
+      state: result.state,
+    });
+    detector = state;
+    if (closed !== null) {
       bb.log.info(`episode ${closed.id} closed after ${closed.samples} hot samples`);
     }
-    if (result.updated !== null) {
-      open = store.saveEpisode(result.updated);
-      if (result.opened !== null) await announce(open);
-    }
-    detector = { ...result.state, open };
-    await bb.storage.kv.set(DETECTOR_KEY, detector);
+    if (result.opened !== null && open !== null) await announce(open);
     bb.realtime.publish(SAMPLED, {
       at: sample.at,
       thermal: sample.thermal,

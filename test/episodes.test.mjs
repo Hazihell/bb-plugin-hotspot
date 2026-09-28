@@ -125,3 +125,29 @@ test("restoreState keeps a valid stored state and resets anything else", async (
   assert.deepEqual(restoreState({ streak: "x", open: null, normalStreak: 0, lastAt: null }), initialState());
   assert.deepEqual(restoreState({ ...state, normalStreak: -1 }), initialState());
 });
+
+test("commitStep writes the sample, episode and state together or not at all", () => {
+  const db = new Database(":memory:");
+  for (const statement of MIGRATIONS) db.exec(statement);
+  const store = createStore(db);
+
+  const opened = run([hot(0), hot(1), hot(2)]).state;
+  const { open, state } = store.commitStep({
+    sample: hot(2),
+    closed: null,
+    updated: opened.open,
+    state: opened,
+  });
+  assert.equal(typeof open.id, "number");
+  assert.equal(store.detectorState().open.id, open.id);
+  assert.equal(state.open.id, open.id);
+
+  // A failure after the episode write rolls back the sample and the episode.
+  const broken = { ...opened, lastAt: 10n };
+  assert.throws(() =>
+    store.commitStep({ sample: hot(3), closed: null, updated: { ...opened.open, id: null }, state: broken }),
+  );
+  assert.equal(store.samples(0, Number.MAX_SAFE_INTEGER).length, 1);
+  assert.equal(store.episodes(0, Number.MAX_SAFE_INTEGER, 10).length, 1);
+  assert.equal(store.detectorState().open.id, open.id);
+});
