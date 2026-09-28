@@ -9,19 +9,24 @@
 // Monitoring is read-only; nothing here signals, renices or kills a process.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { type Range, rpcContract } from "./lib/contract";
 import { type DetectorState, type Episode, initialState, step } from "./lib/episodes";
+import { bucketSamples } from "./lib/report";
+import { EPISODE_OPENED, type EpisodeOpenedSignal, SAMPLED } from "./lib/signals";
 import { createSampler } from "./lib/sample";
-import { MIGRATIONS, createStore } from "./lib/store";
+import { DAY_MS, MIGRATIONS, createStore } from "./lib/store";
 
 const TITLE_TTL_MS = 10 * 60_000;
 /** Consecutive hot samples that open an episode, and normal ones that close it. */
 const OPEN_AFTER = 3;
 const CLOSE_AFTER = 3;
 const DETECTOR_KEY = "detector";
-
-/** Realtime channels the app bundle listens on. */
-export const SAMPLED = "sampled";
-export const EPISODE_OPENED = "episode-opened";
+/** Window and bucket count per timeline range: 5-minute and 30-minute buckets. */
+const RANGE_SPECS: Record<Range, { spanMs: number; buckets: number }> = {
+  "24h": { spanMs: DAY_MS, buckets: 288 },
+  "7d": { spanMs: 7 * DAY_MS, buckets: 336 },
+};
+const TIMELINE_EPISODE_LIMIT = 200;
 
 /** Resolves when `ms` elapses or `signal` aborts, whichever comes first. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -57,6 +62,11 @@ export default async function plugin(bb: BbPluginApi) {
       experimental_schema: z.number().min(10).max(100),
       default: 80,
     },
+    toast: {
+      type: "boolean",
+      label: "Show a toast when an episode starts",
+      default: true,
+    },
   });
 
   const db = bb.storage.database();
@@ -73,7 +83,7 @@ export default async function plugin(bb: BbPluginApi) {
         const cached = titles.get(threadId);
         if (cached !== undefined && now - cached.at < TITLE_TTL_MS) return;
         const thread = await bb.sdk.threads.get({ threadId }).catch(() => null);
-        titles.set(threadId, { title: thread?.title ?? null, at: now });
+        titles.set(threadId, { title: thread?.title ?? thread?.titleFallback ?? null, at: now });
       }),
     );
     const resolved = new Map<string, string>();
@@ -108,7 +118,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     if (result.updated !== null) {
       open = store.saveEpisode(result.updated);
-      if (result.opened !== null) announce(open);
+      if (result.opened !== null) await announce(open);
     }
     detector = { ...result.state, open };
     await bb.storage.kv.set(DETECTOR_KEY, detector);
@@ -120,12 +130,48 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }
 
-  function announce(episode: Episode): void {
+  // The server has no toast API, so it publishes the opening and every open
+  // app window raises the toast itself (app.tsx, HotspotToaster).
+  async function announce(episode: Episode): Promise<void> {
     const top = episode.culprits[0] ?? null;
     bb.log.info(
       `episode ${episode.id} opened; top thread ${top === null ? "none" : top.threadId}`,
     );
+    if (episode.id === null || !(await settings.get()).toast) return;
+    const signal: EpisodeOpenedSignal = {
+      id: episode.id,
+      startAt: episode.startAt,
+      peakThermal: episode.peakThermal,
+      peakCpu: episode.peakCpu,
+      top: top === null ? null : { threadId: top.threadId, title: top.title },
+    };
+    bb.realtime.publish(EPISODE_OPENED, signal);
   }
+
+  bb.rpc.register(rpcContract, {
+    async status() {
+      const { cpuThreshold, sampleIntervalSeconds } = await settings.get();
+      return {
+        latest: store.latest(),
+        open: detector.open,
+        cpuThreshold,
+        sampleIntervalSeconds,
+      };
+    },
+    timeline({ range }) {
+      const { spanMs, buckets } = RANGE_SPECS[range];
+      const to = Date.now();
+      const from = to - spanMs;
+      const { bucketMs, points } = bucketSamples(store.samples(from, to), from, to, buckets);
+      return {
+        from,
+        to,
+        bucketMs,
+        points,
+        episodes: store.episodes(from, to, TIMELINE_EPISODE_LIMIT),
+      };
+    },
+  });
 
   bb.background.service("sampler", {
     async start(signal) {

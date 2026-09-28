@@ -17,7 +17,7 @@
     "name": "Hotspot",
     "description": "Records when your Mac runs hot and names the BB thread that caused it.",
     "branding": {
-      "icon": "Flame"
+      "icon": "./assets/icon.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx"

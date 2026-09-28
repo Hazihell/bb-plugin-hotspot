@@ -83,7 +83,9 @@ export function createSampler(resolveTitles: TitleResolver) {
     previousTicks = ticks;
 
     const attribution = attributeThreads(rows);
-    const threads = groupByThread(rows, attribution).slice(0, TOP_THREADS);
+    const threads = groupByThread(rows, attribution)
+      .filter((entry) => entry.cpuPercent > 0)
+      .slice(0, TOP_THREADS);
     const titles = await resolveTitles(threads.map((entry) => entry.threadId)).catch(
       () => new Map<string, string>(),
     );
