@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyKill, parseKillLine, planKill, readKillRows } from "../lib/kill.ts";
+import { applyKill, isInteractiveShell, parseKillLine, planKill, readKillRows } from "../lib/kill.ts";
 
 const THREAD = "thr_target0001";
 const OTHER = "thr_other00001";
@@ -90,6 +90,51 @@ test("never selects the agent, BB, the calling shell, other users, system or app
     assert.equal(plan.targets.some((target) => target.pid === pid), false, `targeted ${pid}`);
     assert.equal(plan.excluded.some((entry) => entry.pid === pid), false, `listed ${pid}`);
   }
+});
+
+test("an app launched from a thread is a wall: its terminals are never the thread's", () => {
+  // The live tree from the review: Orca was opened from thr_tabbvgxkey, so
+  // its helper carries the id and launchd adopted it; its terminals run
+  // through login (root) into interactive zsh.
+  const orca = "thr_tabbvgxkey";
+  const helper = `/Applications/Orca.app/Contents/Frameworks/Orca Helper.app/Contents/MacOS/Orca Helper /Applications/Orca.app/Contents/Resources/app.asar`;
+  const stdout = table({
+    44304: line(44304, 1, `${helper} BB_THREAD_ID=${orca}`),
+    45728: line(45728, 44304, "/usr/bin/login -flpq me /bin/bash --noprofile --norc -p -c export", { uid: 0 }),
+    45761: line(45761, 45728, "-/bin/zsh -l"),
+    45800: line(45800, 45761, "node /Users/me/app/node_modules/.bin/vite", { cpu: 30 }),
+    91794: line(91794, 44304, "/usr/bin/login -flpq me /bin/bash --noprofile --norc -p -c export", { uid: 0 }),
+    92020: line(92020, 91794, `-/bin/zsh -l BB_THREAD_ID=${orca}`),
+  });
+  const plan = planKill(rowsOf(stdout), orca, context);
+  assert.deepEqual(plan.targets, []);
+  const reasons = Object.fromEntries(plan.excluded.map((entry) => [entry.pid, entry.reason]));
+  assert.match(reasons[44304], /an app/);
+  assert.match(reasons[45728], /another user/);
+  assert.match(reasons[92020], /interactive terminal/);
+  assert.match(reasons[45761], /interactive terminal/);
+  assert.match(reasons[45800], /under zsh \(pid 45761\)/);
+});
+
+test("a detached dev server that carries the thread id is the thread's work", () => {
+  const stdout = table({
+    700: line(700, 1, `node /Users/me/app/node_modules/.bin/next dev BB_THREAD_ID=${THREAD}`, { cpu: 40 }),
+    701: line(701, 700, "next-server (v15.5.26)", { cpu: 20 }),
+  });
+  const plan = planKill(rowsOf(stdout), THREAD, context);
+  assert.ok(plan.targets.some((target) => target.pid === 700));
+  assert.ok(plan.targets.some((target) => target.pid === 701));
+});
+
+test("an interactive shell is recognised by a login dash or by having no command", () => {
+  const shell = (argv) => isInteractiveShell({ argv });
+  assert.equal(shell("-/bin/zsh -l"), true);
+  assert.equal(shell("/bin/zsh -i"), true);
+  assert.equal(shell("/bin/bash"), true);
+  assert.equal(shell("/bin/zsh -c npm run dev"), false);
+  assert.equal(shell("/bin/zsh -lc npm test"), false);
+  assert.equal(shell("bash ./start.sh"), false);
+  assert.equal(shell("node server.js"), false);
 });
 
 test("a thread with no work of its own plans nothing", () => {

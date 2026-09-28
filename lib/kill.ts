@@ -12,13 +12,16 @@
  *    before each signal. A recycled pid, a changed command line or a process
  *    that no longer belongs to the thread is refused, not signalled.
  *
- * What may be a target is decided here and nowhere else. A process is a
- * target only when it belongs to the thread (lib/procs.ts attribution), is
- * owned by this user, and is none of: BB itself, the thread's agent (the
- * provider CLI BB launched), the plugin's own process chain, a system binary,
- * or an app bundle. A process that is the parent of any of those is also
- * spared, so the shell running `bb hotspot kill` survives its own command, and
- * so is the rest of the command a `bb` CLI call belongs to (`bb … | head`).
+ * What may be a target is decided here and nowhere else. Ownership is found
+ * by walking up from a process, not by inheriting a thread id: a *wall* (BB,
+ * an app bundle, another user's process, a system binary, an interactive
+ * shell, Hotspot's own chain) ends the thread's claim, so nothing below an
+ * app a thread happened to launch belongs to the thread. Only a process BB
+ * launched (the agent) or a detached one carrying its own BB_THREAD_ID can
+ * pass the thread down. Walls and the agent are never targets. A process
+ * that is the parent of any of those is also spared, so the shell running
+ * `bb hotspot kill` survives its own command, and so is the rest of the
+ * command a `bb` CLI call belongs to (`bb … | head`).
  */
 import { attributeThreads, type ProcessRow, type ProcessSource, processName, splitEnvironment, threadIdFrom } from "./procs";
 
@@ -112,18 +115,71 @@ export interface KillPlan {
   excluded: KillExclusion[];
 }
 
-/** Why a thread process must never be signalled, or null when it may be. */
-function protection(row: KillRow, byPid: Map<number, KillRow>, owner: (pid: number) => string | null, threadId: string, context: PlanContext): string | null {
+const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"]);
+
+/** argv[0]'s basename without a login shell's leading dash. */
+function executable(row: Pick<KillRow, "argv">): string {
+  const argv0 = row.argv.split(/\s/, 1)[0] ?? "";
+  return (argv0.split("/").pop() ?? argv0).replace(/^-/, "");
+}
+
+export function isShell(row: Pick<KillRow, "argv">): boolean {
+  return SHELLS.has(executable(row));
+}
+
+/** A shell reading a terminal: a login shell (`-zsh`), or one with neither `-c` nor a script. */
+export function isInteractiveShell(row: Pick<KillRow, "argv">): boolean {
+  if (!isShell(row)) return false;
+  const [argv0 = "", ...args] = row.argv.split(/\s+/);
+  if (argv0.startsWith("-")) return true;
+  if (args.some((arg) => /^-[a-z]*c[a-z]*$/i.test(arg))) return false;
+  return !args.some((arg) => !arg.startsWith("-"));
+}
+
+/**
+ * Why a process ends a thread's claim, or null. A wall is never a target, and
+ * nothing below it belongs to the thread either: an app launched from a
+ * thread (Orca, VS Code, Docker) passes BB_THREAD_ID to its own terminals and
+ * helpers, which are the user's, not the thread's.
+ */
+export function wallReason(row: KillRow, context: PlanContext): string | null {
   if (context.selfPids.has(row.pid)) return "Hotspot's own process or the BB host running it";
   if (isBbProcess(row)) return "BB itself";
   if (row.uid !== context.uid) return "owned by another user";
-  const parent = byPid.get(row.ppid);
-  if (parent !== undefined && isBbProcess(parent)) return "the thread's agent (launched by BB)";
-  if (row.ppid > 1 && owner(row.ppid) !== threadId) return "the thread's agent (started outside the thread's work)";
-  const executable = row.argv.split(/\s/, 1)[0] ?? "";
-  if (SYSTEM_PATH.test(executable)) return "a system process";
+  if (SYSTEM_PATH.test(row.argv.split(/\s/, 1)[0] ?? "")) return "a system process";
   if (APP_BUNDLE.test(row.argv) && !HEADLESS.test(row.argv)) return "an app, not work the thread started";
+  if (isInteractiveShell(row)) return "an interactive terminal shell";
   return null;
+}
+
+/** Who may claim a process for a kill, found by walking up to the nearest wall, BB or launchd. */
+interface Ownership {
+  /** The nearest thread id on the path, or null (none, or a wall was in the way). */
+  threadId: string | null;
+  /** The wall that ended the claim; the process itself when it is one. */
+  wall: KillRow | null;
+  /** The top of the path: launched by BB (`byBb`) or detached to launchd. */
+  root: KillRow | null;
+  byBb: boolean;
+}
+
+function ownershipOf(row: KillRow, byPid: Map<number, KillRow>, context: PlanContext): Ownership {
+  const path: KillRow[] = [];
+  const seen = new Set<number>();
+  let byBb = false;
+  for (let node: KillRow | undefined = row; node !== undefined && !seen.has(node.pid); ) {
+    seen.add(node.pid);
+    if (wallReason(node, context) !== null) return { threadId: null, wall: node, root: null, byBb: false };
+    path.push(node);
+    const parent: KillRow | undefined = node.ppid > 1 ? byPid.get(node.ppid) : undefined;
+    if (parent !== undefined && (isBbProcess(parent) || context.selfPids.has(parent.pid))) {
+      byBb = true;
+      break;
+    }
+    node = parent;
+  }
+  const threadId = path.find((node) => node.threadId !== null)?.threadId ?? null;
+  return { threadId, wall: null, root: path[path.length - 1] ?? null, byBb };
 }
 
 /**
@@ -132,31 +188,43 @@ function protection(row: KillRow, byPid: Map<number, KillRow>, owner: (pid: numb
  */
 export function planKill(rows: readonly KillRow[], threadId: string, context: PlanContext): KillPlan {
   const byPid = new Map(rows.map((row) => [row.pid, row] as const));
-  const attribution = attributeThreads([...rows]);
-  const owner = (pid: number) => attribution.get(pid) ?? null;
+  const owners = new Map(rows.map((row) => [row.pid, ownershipOf(row, byPid, context)] as const));
+  const owner = (pid: number) => owners.get(pid)?.threadId ?? null;
   const members = rows.filter((row) => owner(row.pid) === threadId);
+  const memberPids = new Set(members.map((row) => row.pid));
 
   const reasons = new Map<number, string>();
   for (const row of members) {
-    const reason = protection(row, byPid, owner, threadId, context);
-    if (reason !== null) reasons.set(row.pid, reason);
+    const ownership = owners.get(row.pid);
+    if (ownership?.byBb && ownership.root === row) reasons.set(row.pid, "the thread's agent (launched by BB)");
+  }
+  // Processes the thread id reaches only through a wall are listed, not
+  // targeted, so the plan says why a terminal or an app's helper is safe.
+  const shadowed: KillExclusion[] = [];
+  const attribution = attributeThreads([...rows]);
+  for (const row of rows) {
+    const wall = owners.get(row.pid)?.wall ?? null;
+    if (wall === null || attribution.get(row.pid) !== threadId) continue;
+    const reason = wall === row ? (wallReason(row, context) ?? "") : `under ${wall.name} (pid ${wall.pid}), which the thread does not own`;
+    shadowed.push({ pid: row.pid, name: row.name, cpuPercent: row.cpuPercent, reason });
   }
   // A `bb` CLI call inside the thread: the other processes its shell runs
   // are the same command (a pipeline), not work to stop.
-  for (const row of members) {
-    if (!isBbProcess(row) || context.selfPids.has(row.pid)) continue;
+  for (const row of rows) {
+    if (!isBbProcess(row) || context.selfPids.has(row.pid) || !memberPids.has(row.ppid)) continue;
     for (const sibling of members) {
-      if (sibling.ppid === row.ppid && sibling.pid !== row.pid && !reasons.has(sibling.pid)) {
+      if (sibling.ppid === row.ppid && !reasons.has(sibling.pid)) {
         reasons.set(sibling.pid, "part of the same command as a bb CLI call");
       }
     }
   }
   // Killing a parent can take its child with it: spare every thread process
-  // above a protected one.
-  for (const pid of [...reasons.keys()]) {
+  // above a protected one, walls included.
+  const guarded = [...reasons.keys(), ...rows.filter((row) => owners.get(row.pid)?.wall === row).map((row) => row.pid)];
+  for (const pid of guarded) {
     let parent = byPid.get(byPid.get(pid)?.ppid ?? -1);
     const seen = new Set<number>([pid]);
-    while (parent !== undefined && owner(parent.pid) === threadId && !seen.has(parent.pid)) {
+    while (parent !== undefined && memberPids.has(parent.pid) && !seen.has(parent.pid)) {
       seen.add(parent.pid);
       if (!reasons.has(parent.pid)) reasons.set(parent.pid, "the parent of a protected process (such as the shell running this command)");
       parent = byPid.get(parent.ppid);
@@ -184,9 +252,12 @@ export function planKill(rows: readonly KillRow[], threadId: string, context: Pl
       startedAt: row.startedAt,
       cpuPercent: row.cpuPercent,
     }));
-  const excluded = members
-    .filter((row) => reasons.has(row.pid))
-    .map((row) => ({ pid: row.pid, name: row.name, cpuPercent: row.cpuPercent, reason: reasons.get(row.pid) ?? "" }));
+  const excluded = [
+    ...members
+      .filter((row) => reasons.has(row.pid))
+      .map((row) => ({ pid: row.pid, name: row.name, cpuPercent: row.cpuPercent, reason: reasons.get(row.pid) ?? "" })),
+    ...shadowed,
+  ];
   return { threadId, targets, excluded };
 }
 
@@ -281,7 +352,7 @@ export async function applyKill(plan: KillPlan, deps: ApplyDeps): Promise<KillRe
         continue;
       }
       const orphanedByUs = row.ppid <= 1 || signalledPids.has(row.ppid);
-      const protectedNow = row.uid !== deps.context.uid || isBbProcess(row) || deps.context.selfPids.has(row.pid);
+      const protectedNow = wallReason(row, deps.context) !== null;
       if (protectedNow || !(stillAllowed.has(row.pid) || orphanedByUs)) {
         outcome(target, "refused", "survived SIGTERM but is no longer eligible for SIGKILL");
         continue;
