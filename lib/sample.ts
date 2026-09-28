@@ -24,6 +24,7 @@ import {
   topUnattributed,
 } from "./procs";
 import { type MemorySource, readMemory, systemMemorySource } from "./memory";
+import { friendlyName } from "./proc-name";
 import type { Memory, Sample } from "./schemas";
 import { readThermal } from "./thermal";
 
@@ -34,6 +35,8 @@ export const TOP_THREADS = 5;
  */
 export const STORED_THREADS = TOP_THREADS + 3;
 export const TOP_PROCESSES = 5;
+/** Processes kept per thread for the popover's drill-down. */
+export const TOP_PROCESSES_PER_THREAD = 5;
 
 export interface CpuTicks {
   busy: number;
@@ -220,6 +223,14 @@ export function createSampler(options: SamplerOptions = {}): TakeReading {
       const threads = groupByThread(measured, attribution)
         .filter((entry) => entry.cpuPercent > 0)
         .slice(0, STORED_THREADS);
+      // Each kept thread's busiest processes, named without their command lines.
+      const byThread = new Map<string, ProcessRow[]>(threads.map((entry) => [entry.threadId, []]));
+      for (const row of measured) byThread.get(attribution.get(row.pid) ?? "")?.push(row);
+      const topOf = (threadId: string) =>
+        (byThread.get(threadId) ?? [])
+          .sort((a, b) => b.cpuPercent - a.cpuPercent || b.rssBytes - a.rssBytes)
+          .slice(0, TOP_PROCESSES_PER_THREAD)
+          .map((row) => ({ pid: row.pid, name: friendlyName(row.argv), cpu: round(row.cpuPercent / cores), memBytes: row.rssBytes }));
       return {
         at,
         thermal,
@@ -231,6 +242,7 @@ export function createSampler(options: SamplerOptions = {}): TakeReading {
           cpu: round(entry.cpuPercent / cores),
           processes: entry.processCount,
           memBytes: entry.rssBytes,
+          top: topOf(entry.threadId),
         })),
         procs: topUnattributed(measured, attribution, TOP_PROCESSES).map((row) => ({
           pid: row.pid,

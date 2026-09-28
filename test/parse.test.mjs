@@ -90,6 +90,7 @@ test("parsePs reads pid, ppid, cpu, resident memory and skips malformed lines", 
     name: "claude",
     threadId: "thr_aaaaaaaaaa",
     bb: false,
+    argv: "/Users/me/.local/bin/claude --verbose",
   });
 });
 

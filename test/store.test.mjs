@@ -27,9 +27,13 @@ const MEMORY = {
 test("samples round-trip with their thread lists", () => {
   const store = openStore();
   const threads = [{ threadId: "thr_aaaaaaaaaa", cpu: 90, processes: 3, memBytes: 512 * 1024 ** 2 }];
-  store.addSample(sample(1_000, { threads, thermal: null, memory: MEMORY }));
+  const top = [{ pid: 7, name: "node · vite", cpu: 80, memBytes: 1024 }];
+  store.addSample(sample(1_000, { threads: [{ ...threads[0], top }], thermal: null, memory: MEMORY }));
   store.addSample(sample(2_000));
-  assert.deepEqual(store.samples(0, 1_500), [sample(1_000, { threads, thermal: null, memory: MEMORY })]);
+  // A thread's processes are not kept per stored sample.
+  assert.deepEqual(store.samples(0, 1_500), [
+    sample(1_000, { threads: [{ ...threads[0], top: null }], thermal: null, memory: MEMORY }),
+  ]);
   assert.equal(store.latest()?.at, 2_000);
 });
 
@@ -72,7 +76,7 @@ test("a title stored by an older build is stripped when the row is read", () => 
   store.addSample(
     sample(1_000, { threads: [{ threadId: "thr_aaaaaaaaaa", title: "Old title", cpu: 9, processes: 1 }] }),
   );
-  assert.deepEqual(store.latest().threads, [{ threadId: "thr_aaaaaaaaaa", cpu: 9, processes: 1, memBytes: null }]);
+  assert.deepEqual(store.latest().threads, [{ threadId: "thr_aaaaaaaaaa", cpu: 9, processes: 1, memBytes: null, top: null }]);
 });
 
 test("readings carry only time, CPU, thermal level, load and memory %", () => {
@@ -100,7 +104,7 @@ test("the memory migration keeps rows stored before it, which read back without 
     cpu: 42,
     load: 0.5,
     memory: null,
-    threads: [{ threadId: "thr_aaaaaaaaaa", cpu: 30, processes: 2, memBytes: null }],
+    threads: [{ threadId: "thr_aaaaaaaaaa", cpu: 30, processes: 2, memBytes: null, top: null }],
     procs: [],
     bb: null,
   });

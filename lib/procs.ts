@@ -88,6 +88,8 @@ export interface ProcessRow {
   threadId: string | null;
   /** One of BB's own processes (isBbCommand). */
   bb: boolean;
+  /** The command line without the environment. Kept in memory for naming (lib/proc-name.ts); never stored or sent. */
+  argv: string;
 }
 
 export interface ThreadCpu {
@@ -99,6 +101,19 @@ export interface ThreadCpu {
 }
 
 /**
+ * argv[0] and the rest of the command line. `ps` joins argv (and, with -E,
+ * the environment) with spaces, and executables on macOS have spaces in
+ * their paths, so there is no lossless split. argv[0] ends at the first
+ * space that starts something recognisably *not* part of a path: a flag,
+ * another absolute path, or a `VAR=value`.
+ */
+export function splitArgv0(command: string): { argv0: string; rest: string } {
+  const boundary = /\s(?=[-/]|\S*=)/.exec(command);
+  if (boundary === null) return { argv0: command.trim(), rest: "" };
+  return { argv0: command.slice(0, boundary.index).trim(), rest: command.slice(boundary.index + 1).trim() };
+}
+
+/**
  * Basename of argv[0], with the macOS app-bundle tail preferred.
  *
  * `/Applications/bb.app/Contents/MacOS/bb Helper (Renderer)` should read as
@@ -106,12 +121,7 @@ export interface ThreadCpu {
  * should read as "node".
  */
 export function processName(command: string): string {
-  // `ps` joins argv (and, with -E, the environment) with spaces, and
-  // executables on macOS have spaces in their paths, so there is no lossless
-  // split. End argv[0] at the first space that starts something recognisably
-  // *not* part of a path: a flag, another absolute path, or a `VAR=value`.
-  const boundary = /\s(?=[-/]|\S*=)/.exec(command);
-  const argv0 = (boundary === null ? command : command.slice(0, boundary.index)).trim();
+  const { argv0 } = splitArgv0(command);
   const base = (argv0.split("/").pop() ?? argv0).trim();
   // `next-server (v16.3.4)` — the version is noise in a label.
   return base.replace(/\s*\([^)]*\)\s*$/, "") || argv0;
@@ -191,6 +201,7 @@ export function parsePsLine(line: string): ProcessRow | null {
   if (match === null) return null;
   const command = match[7];
   const name = processName(command);
+  const { argv } = splitEnvironment(command);
   return {
     pid: Number(match[1]),
     ppid: Number(match[2]),
@@ -200,7 +211,8 @@ export function parsePsLine(line: string): ProcessRow | null {
     key: `${match[1]}@${match[6].replace(/\s+/g, " ")}`,
     name,
     threadId: parseThreadId(command),
-    bb: isBbCommand(splitEnvironment(command).argv, name),
+    bb: isBbCommand(argv, name),
+    argv,
   };
 }
 
@@ -246,6 +258,7 @@ export async function readProcesses(
         name: processName(argv),
         threadId: threadIdFrom(argv, env),
         bb: isBbCommand(argv, processName(argv)),
+        argv,
       };
     }),
   );

@@ -187,7 +187,9 @@ export function createStore(db: Db) {
       load: sample.load,
       mem: sample.memory?.percent ?? null,
       memory: sample.memory === null ? null : JSON.stringify(sample.memory),
-      threads: JSON.stringify(sample.threads),
+      // A thread's processes feed the open episode's culprits (lib/episodes.ts)
+      // and are not kept per sample.
+      threads: JSON.stringify(sample.threads.map(({ top: _top, ...thread }) => thread)),
       procs: JSON.stringify(sample.procs),
       bb: sample.bb === null ? null : JSON.stringify(sample.bb),
     });

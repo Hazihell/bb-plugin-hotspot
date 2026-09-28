@@ -32,7 +32,10 @@ Call `hotspot_history` with a window around the time the user names:
 It returns a summary of the whole window (average and peak CPU, average and
 peak memory used, peak swap, worst memory pressure, peak thermal level,
 BB's total CPU (average and peak) and peak memory, and the busiest threads with their CPU and peak memory) and every episode
-overlapping it with its ranked culprits. Samples taken before memory was
+overlapping it with its ranked culprits, each with its busiest processes
+over the episode (`processes: node · vite avg 30%, …`; absent for episodes
+recorded before this was kept). Process names never include flag values or
+the environment. Samples taken before memory was
 recorded say "Memory: not recorded". When there is no episode, the window summary still says what was
 busy. Name the culprit thread by title and give its id as `@thread:<id>` so
 BB renders a link.
@@ -48,7 +51,8 @@ bb hotspot kill <threadId> [--yes] [--json]
 `status` takes a fresh reading (or reuses one under 5 seconds old), so its
 CPU figures cover the time since the previous reading rather than the last
 stored minute. It prints the reading (including a memory line, a BB total line
-with its app/threads split, and each thread's memory) and the episode in progress, if any; `--json` carries the
+with its app/threads split, and each thread's memory with its five busiest
+processes indented under it) and the episode in progress, if any; `--json` carries the
 full memory reading under `latest.memory`, `memBytes` per thread, and
 the BB total under `latest.bb` (`cpu`, `memBytes`, `processes`, and the
 same for `app` and `threads`).
@@ -121,7 +125,8 @@ swap) and load per core with a line for the last hour, then BB's total CPU and m
 app's own processes plus every thread's; memory is summed RSS, so shared
 pages count more than once) and the five
 busiest threads with CPU and memory, one line each (the title opens the
-thread; "…" unfolds Stop turn and Kill processes…; threads under 1% CPU and
+thread; "…" unfolds its five busiest processes, Stop turn and Kill
+processes…; threads under 1% CPU and
 1 GB fold into "N idle threads"), other
 busy processes with an Activity Monitor button (opens the OS monitor on
 the server's machine; hidden on a phone; the user's button, not an agent

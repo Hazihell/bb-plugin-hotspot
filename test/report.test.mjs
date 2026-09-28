@@ -86,3 +86,33 @@ test("status and the window summary include the BB total, with its split", () =>
   assert.match(describeWindow(window, []).join("\n"), /BB total \(app and all threads\) CPU avg 32%, peak 40%; peak memory 3\.1 GB/);
   assert.match(describeWindow(summarizeWindow([{ ...base, bb: null }]), []).join("\n"), /BB total: not recorded/);
 });
+
+test("status lists each thread's top processes under it; an episode names its culprits' processes", () => {
+  const base = { at: 0, thermal: 0, cpu: 50, load: 0.5, memory: null, procs: [], bb: null };
+  const thread = {
+    threadId: "thr_aaaaaaaaaa",
+    title: "Home page",
+    cpu: 40,
+    processes: 7,
+    memBytes: 1024 ** 3,
+    top: [
+      { pid: 11, name: "yes", cpu: 25, memBytes: 1024 ** 2 },
+      { pid: 12, name: "node · vite", cpu: 12, memBytes: 300 * 1024 ** 2 },
+    ],
+  };
+  const text = describeSample({ ...base, threads: [thread] }).join("\n");
+  assert.deepEqual(text.split("\n").slice(2), [
+    "  thread  40%  1.0 GB  Home page (thr_aaaaaaaaaa), 7 proc",
+    "          25%    1 MB    yes (pid 11)",
+    "          12%  300 MB    node · vite (pid 12)",
+    "                       …and 5 more",
+  ]);
+  assert.doesNotMatch(describeSample({ ...base, threads: [{ ...thread, top: null }] }).join("\n"), /more|pid/);
+
+  const episode = {
+    id: 3, startAt: 0, endAt: 60_000, lastHotAt: 60_000, peakThermal: 1, peakCpu: 90, samples: 4, others: [],
+    culprits: [{ threadId: "thr_aaaaaaaaaa", title: "Home page", cpuSum: 160, samples: 4, peakCpu: 50,
+      procs: [{ name: "yes", cpuSum: 100, samples: 4, peakCpu: 25 }, { name: "node · vite", cpuSum: 40, samples: 4, peakCpu: 12 }] }],
+  };
+  assert.match(describeEpisode(episode, 3).join("\n"), /\n {5}processes: yes avg 25%, node · vite avg 10%/);
+});

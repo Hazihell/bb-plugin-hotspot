@@ -196,3 +196,37 @@ test("culprits are trimmed only when the episode closes", async () => {
   assert.equal(closed.culprits.length, MAX_CULPRITS);
   assert.equal(closed.endAt, 61 * MINUTE);
 });
+
+test("a culprit keeps its busiest processes by name; a closed episode keeps three", () => {
+  const T = "thr_aaaaaaaaaa";
+  const proc = (pid, name, cpu) => ({ pid, name, cpu, memBytes: 1024 });
+  const busy = (minute, top) => hot(minute, [{ ...thread(T, 60), top }]);
+  const { events } = run([
+    // Two `node · vite` pids in one sample add up; pids change between samples.
+    busy(0, [proc(1, "node · vite", 30), proc(2, "node · vite", 10), proc(3, "node · tsc --watch", 15), proc(4, "esbuild", 5)]),
+    busy(1, [proc(5, "node · vite", 35), proc(6, "yes", 20)]),
+    // A thread without processes (an older reading) leaves them as they were.
+    hot(2, [thread(T, 50)]),
+    busy(3, [proc(7, "claude", 1)]),
+    cool(4),
+    cool(5),
+    cool(6),
+  ]);
+  const [, , closed] = events.find((event) => event[0] === "closed");
+  assert.deepEqual(closed.culprits[0].procs, [
+    { name: "node · vite", cpuSum: 75, samples: 2, peakCpu: 40 },
+    { name: "yes", cpuSum: 20, samples: 1, peakCpu: 20 },
+    { name: "node · tsc --watch", cpuSum: 15, samples: 1, peakCpu: 15 },
+  ]);
+});
+
+test("episodes stored before culprit processes read back with none", () => {
+  const db = new Database(":memory:");
+  for (const statement of MIGRATIONS) db.exec(statement);
+  db.prepare(
+    `INSERT INTO episodes (start_at, end_at, last_hot_at, peak_thermal, peak_cpu, samples, culprits, others)
+     VALUES (0, 60000, 60000, 1, 90, 2, '[{"threadId":"thr_aaaaaaaaaa","cpuSum":100,"samples":2,"peakCpu":60}]', '[]')`,
+  ).run();
+  const [episode] = createStore(db).episodes(0, DAY_MS, 5);
+  assert.equal(episode.culprits[0].procs, null);
+});

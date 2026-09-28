@@ -43,8 +43,15 @@ server, and the `bb` CLI) plus every process attributed to a thread, with
 the app/threads split in its tooltip. Children of BB that no thread claims
 (a plugin's build toolchain, say) are not counted. Memory is summed
 resident size, so pages shared between processes count more than once. Clicking a
-title opens the thread; its "…" button unfolds the process count, Stop turn
-and Kill processes…, which kills its work processes after a confirmation
+title opens the thread; its "…" button unfolds the thread's five busiest
+processes (name, CPU, memory, in the list's columns), the process count,
+Stop turn and Kill processes…. The process list is display only; its rows
+are fixed when you unfold and only their numbers update. Names are built
+from safe pieces only (the executable, the script or package an
+interpreter or runner runs, and a known verb such as `dev` or `--watch`),
+never from flag values or the environment, so `node …/vite.js` reads
+`node · vite` and `curl -H "Authorization: …"` reads `curl`. Kill
+processes… kills its work processes after a confirmation
 that names what gets SIGTERM and lists what is spared. Threads under 1% CPU
 and 1 GB of memory fold into an "N idle threads" line, and only the thread
 list scrolls, so the verdict, numbers and last hot spells stay in view.
@@ -72,7 +79,8 @@ a 24-hour or 7-day timeline of CPU with the thermal level beneath it and hot
 spells (episodes) shaded, a shorter memory plot under it on the same time
 axis, and the list of hot spells. Hover, tap or step through
 the chart with the arrow keys; selecting a shaded band, or a recent hot
-spell in the popover, opens that episode's culprits. Agents answer "why was my Mac hot at 3pm?" with the
+spell in the popover, opens that episode's culprits, each with its three
+busiest processes over the spell (recorded from this version on). Agents answer "why was my Mac hot at 3pm?" with the
 `hotspot_history` tool, and `bb hotspot status` / `bb hotspot episodes` do the
 same from a terminal. `skills/hotspot/SKILL.md` documents the commands,
 settings and limits.
@@ -101,7 +109,8 @@ with tests: `procs.ts` (process table and thread attribution), `thermal.ts`,
 `memory.ts` (memory and swap),
 `sample.ts` (one reading over the live and stored windows), `episodes.ts` (the detector, a pure state machine), `store.ts`
 (the plugin's SQLite database), `report.ts` (text and timeline shaping),
-`kill.ts` (the kill planner and apply), `monitor.ts` (finding and
+`kill.ts` (the kill planner and apply), `proc-name.ts` (safe process
+names for the drill-down), `monitor.ts` (finding and
 opening the OS process monitor) and `footer.ts` (the footer wording
 and how it narrows).
 `lib/present.ts` holds the verdict and the time, tick and kill-summary

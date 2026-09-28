@@ -9,6 +9,16 @@ import { z } from "zod";
  * Stored rows hold thread ids only; titles are looked up when shown
  * (lib/threads.ts). A `title` in a row from an older build is stripped.
  */
+/** One of a thread's busiest processes in a reading (the popover's drill-down). */
+export const threadProcessSchema = z.object({
+  pid: z.number(),
+  /** A safe short name (lib/proc-name.ts), never the command line. */
+  name: z.string(),
+  /** Share of the whole machine, 0–100. */
+  cpu: z.number(),
+  memBytes: z.number(),
+});
+
 export const threadEntrySchema = z.object({
   threadId: z.string(),
   /** Share of the whole machine, 0–100 (not per-core `ps` percent). */
@@ -16,6 +26,11 @@ export const threadEntrySchema = z.object({
   processes: z.number(),
   /** Resident memory summed over the thread's processes, in bytes; null in rows from older builds. */
   memBytes: z.number().nullable().default(null),
+  /**
+   * The thread's busiest processes, by CPU, at most TOP_PROCESSES_PER_THREAD.
+   * Live readings only: stored samples leave it out (null).
+   */
+  top: z.array(threadProcessSchema).nullable().default(null),
 });
 
 export const processEntrySchema = z.object({
@@ -74,6 +89,14 @@ export const sampleSchema = z.object({
   bb: bbTotalSchema.nullable().default(null),
 });
 
+/** A process name inside a culprit thread, summed over the hot samples, by name (pids change). */
+export const culpritProcessSchema = z.object({
+  name: z.string(),
+  cpuSum: z.number(),
+  samples: z.number(),
+  peakCpu: z.number(),
+});
+
 export const culpritSchema = z.object({
   threadId: z.string(),
   /** Sum of the thread's CPU % over the hot samples it appeared in. */
@@ -81,6 +104,8 @@ export const culpritSchema = z.object({
   /** Hot samples in which the thread was in the top five. */
   samples: z.number(),
   peakCpu: z.number(),
+  /** Its busiest processes by name, top 3 once the episode closes; null in episodes from older builds. */
+  procs: z.array(culpritProcessSchema).nullable().default(null),
 });
 
 export const otherCulpritSchema = z.object({
@@ -135,6 +160,8 @@ export const timelinePointSchema = z.object({
 });
 
 export type ThreadEntry = z.infer<typeof threadEntrySchema>;
+export type ThreadProcess = z.infer<typeof threadProcessSchema>;
+export type CulpritProcess = z.infer<typeof culpritProcessSchema>;
 export type Memory = z.infer<typeof memorySchema>;
 export type BbTotal = z.infer<typeof bbTotalSchema>;
 export type ProcessEntry = z.infer<typeof processEntrySchema>;

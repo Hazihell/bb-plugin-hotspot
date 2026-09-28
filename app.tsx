@@ -95,6 +95,14 @@ function EpisodeDetail({ episode, intervalMs }: { episode: Episode; intervalMs: 
                       ? ` · busy for ${minutes(culprit.samples)} of ${minutes(episode.samples)}`
                       : null}
                   </span>
+                  {(culprit.procs ?? []).length === 0 ? null : (
+                    <span className="block truncate text-xs tabular-nums text-muted-foreground">
+                      {(culprit.procs ?? [])
+                        .slice(0, 3)
+                        .map((proc) => `${proc.name} avg ${pct(proc.cpuSum / Math.max(1, episode.samples))}`)
+                        .join(" · ")}
+                    </span>
+                  )}
                 </span>
                 <Icon name="ChevronRight" className="size-4 shrink-0 text-muted-foreground" />
               </button>

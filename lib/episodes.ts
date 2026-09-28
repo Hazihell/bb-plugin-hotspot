@@ -8,7 +8,14 @@
  * over the episode's hot samples, so a thread that burned hard for the whole
  * episode outranks one that spiked once.
  */
-import { type DetectorState, type Episode, type Sample, detectorStateSchema } from "./schemas";
+import {
+  type CulpritProcess,
+  type DetectorState,
+  type Episode,
+  type Sample,
+  type ThreadProcess,
+  detectorStateSchema,
+} from "./schemas";
 
 export type { Culprit, DetectorState, Episode, OtherCulprit } from "./schemas";
 
@@ -44,6 +51,9 @@ export interface StepResult {
 }
 
 export const MAX_CULPRITS = 50;
+/** Process names kept per culprit while an episode is open, and once it closes. */
+export const OPEN_CULPRIT_PROCS = 20;
+export const CULPRIT_PROCS = 3;
 
 export function initialState(): DetectorState {
   return { streak: null, open: null, normalStreak: 0, lastAt: null, lastIntervalMs: null };
@@ -78,6 +88,24 @@ function emptyEpisode(at: number): Episode {
 
 const round = (value: number) => Math.round(value * 10) / 10;
 
+/**
+ * A culprit's processes after one more sample, by name: two `node · vite`
+ * pids in one sample add up. Capped while open; finish() trims further.
+ */
+function absorbProcs(procs: CulpritProcess[], top: readonly ThreadProcess[]): CulpritProcess[] {
+  const byName = new Map(procs.map((entry) => [entry.name, { ...entry }]));
+  const inSample = new Map<string, number>();
+  for (const proc of top) inSample.set(proc.name, (inSample.get(proc.name) ?? 0) + proc.cpu);
+  for (const [name, cpu] of inSample) {
+    const entry = byName.get(name) ?? { name, cpuSum: 0, samples: 0, peakCpu: 0 };
+    entry.cpuSum = round(entry.cpuSum + cpu);
+    entry.samples += 1;
+    entry.peakCpu = Math.max(entry.peakCpu, round(cpu));
+    byName.set(name, entry);
+  }
+  return [...byName.values()].sort((a, b) => b.cpuSum - a.cpuSum).slice(0, OPEN_CULPRIT_PROCS);
+}
+
 /** Fold one hot sample into an episode. Returns a new object. */
 export function absorb(episode: Episode, sample: Sample): Episode {
   const culprits = new Map(episode.culprits.map((entry) => [entry.threadId, { ...entry }]));
@@ -87,10 +115,12 @@ export function absorb(episode: Episode, sample: Sample): Episode {
       cpuSum: 0,
       samples: 0,
       peakCpu: 0,
+      procs: null,
     };
     entry.cpuSum = round(entry.cpuSum + thread.cpu);
     entry.samples += 1;
     entry.peakCpu = Math.max(entry.peakCpu, thread.cpu);
+    if (thread.top !== null && thread.top !== undefined) entry.procs = absorbProcs(entry.procs ?? [], thread.top);
     culprits.set(thread.threadId, entry);
   }
   const others = new Map(episode.others.map((entry) => [entry.name, { ...entry }]));
@@ -122,7 +152,9 @@ export function finish(episode: Episode): Episode {
   return {
     ...episode,
     endAt: episode.lastHotAt,
-    culprits: episode.culprits.slice(0, MAX_CULPRITS),
+    culprits: episode.culprits
+      .slice(0, MAX_CULPRITS)
+      .map((culprit) => ({ ...culprit, procs: culprit.procs?.slice(0, CULPRIT_PROCS) ?? null })),
     others: episode.others.slice(0, MAX_CULPRITS),
   };
 }

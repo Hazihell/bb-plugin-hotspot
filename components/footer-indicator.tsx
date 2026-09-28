@@ -724,6 +724,7 @@ function ThreadRow({
           <Icon name="MoreHorizontal" className="size-4" />
         </button>
       </div>
+      {expanded ? <ProcessList thread={thread} present={present} /> : null}
       {expanded ? (
         <div id={panelId} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-2 pb-2">
           <p id={metaId} className="min-w-0 basis-full truncate text-xs text-muted-foreground sm:basis-0 sm:flex-1">
@@ -755,6 +756,47 @@ function ThreadRow({
         </div>
       ) : null}
     </li>
+  );
+}
+
+type ThreadProcess = NonNullable<ThreadEntry["top"]>[number];
+
+/**
+ * An unfolded row's busiest processes, in the list's CPU and memory
+ * columns. Display only: kill still plans from the whole thread. Like the
+ * list around it, it holds still while unfolded: the processes and their
+ * order are the ones shown at unfold, and only the numbers change. One that
+ * leaves the reading keeps its row with CPU "—" and its last memory.
+ */
+function ProcessList({ thread, present }: { thread: ThreadEntry; present: boolean }) {
+  const top = thread.top ?? [];
+  const [pids] = useState(() => top.map((proc) => proc.pid));
+  const lastSeen = useRef(new Map<number, ThreadProcess>());
+  for (const proc of top) lastSeen.current.set(proc.pid, proc);
+  const inReading = new Set(present ? top.map((proc) => proc.pid) : []);
+  if (pids.length === 0) return null;
+  return (
+    <ul aria-label={`Busiest processes in ${thread.title ?? thread.threadId}`} className="pb-1">
+      {pids.map((pid) => {
+        const proc = lastSeen.current.get(pid);
+        if (proc === undefined) return null;
+        const live = inReading.has(pid);
+        return (
+          <li
+            key={pid}
+            title={`${proc.name} (pid ${pid})${live ? "" : "\nNot in the latest reading"}`}
+            className="flex h-6 items-center gap-3 pl-2 text-xs tabular-nums"
+          >
+            <span className="min-w-0 flex-1 truncate pl-3 text-muted-foreground">{proc.name}</span>
+            <span className={cn(CPU_COLUMN, live ? "text-foreground" : "text-muted-foreground")}>
+              {live ? cpuText(proc.cpu) : "—"}
+            </span>
+            <span className={cn(MEM_COLUMN, "text-muted-foreground")}>{bytesText(proc.memBytes)}</span>
+            <span aria-hidden="true" className={ACTIONS_COLUMN} />
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

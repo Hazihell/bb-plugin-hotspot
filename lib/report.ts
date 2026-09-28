@@ -125,6 +125,12 @@ export function describeSample(sample: SampleView): string[] {
   if (sample.threads.length === 0) lines.push("  threads: none using CPU");
   for (const thread of sample.threads) {
     lines.push(`  thread ${pct(thread.cpu).padStart(4)}${memCell(thread.memBytes)}  ${threadName(thread)}, ${thread.processes} proc`);
+    // Its busiest processes, indented under it, in the same columns.
+    for (const proc of thread.top ?? []) {
+      lines.push(`         ${pct(proc.cpu).padStart(4)}${memCell(proc.memBytes)}    ${proc.name} (pid ${proc.pid})`);
+    }
+    const rest = thread.processes - (thread.top?.length ?? thread.processes);
+    if (rest > 0) lines.push(`                       …and ${rest} more`);
   }
   for (const proc of sample.procs) {
     lines.push(`  other  ${pct(proc.cpu).padStart(4)}  ${proc.name} (pid ${proc.pid})`);
@@ -145,6 +151,10 @@ export function describeEpisode(episode: EpisodeView, culpritLimit: number): str
     lines.push(
       `  ${index + 1}. ${threadName(culprit)}  avg ${pct(culprit.cpuSum / samples)}, peak ${pct(culprit.peakCpu)}, in ${culprit.samples}/${episode.samples} hot samples`,
     );
+    const procs = (culprit.procs ?? []).slice(0, 3);
+    if (procs.length > 0) {
+      lines.push(`     processes: ${procs.map((proc) => `${proc.name} avg ${pct(proc.cpuSum / samples)}`).join(", ")}`);
+    }
   }
   const others = episode.others.slice(0, 3);
   if (others.length > 0) {

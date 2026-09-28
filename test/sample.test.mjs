@@ -218,3 +218,34 @@ test("without a process table there is no BB total", async () => {
   const { live } = await mac.read();
   assert.equal(live.bb, null);
 });
+
+test("each thread keeps its busiest processes, named safely, and only its own", async () => {
+  const mac = fakeMac();
+  const add = (pid, ppid, command) => mac.procs.set(pid, { ppid, pcpu: 0, cpuMs: 0, start: EARLY, command });
+  add(200, 1, `/Users/me/.local/bin/claude --verbose BB_THREAD_ID=${THREAD}`);
+  add(201, 200, "/bin/zsh -c npm run dev");
+  add(202, 201, "node /repo/node_modules/vite/bin/vite.js --port 5173");
+  add(203, 200, "/usr/bin/yes");
+  add(204, 200, "curl -H Authorization: Bearer sk-ant-api03-abcdefghijklmnop https://api.example.com");
+  add(205, 200, "node /repo/node_modules/typescript/bin/tsc --watch");
+  add(206, 200, "/usr/bin/sleep 100");
+  add(300, 1, "/Applications/Slack.app/Contents/MacOS/Slack");
+  await mac.read();
+  mac.advance(2, { 202: 1, 203: 2, 204: 0.4, 205: 0.2, 206: 0.1, 200: 0.04, 300: 1 });
+  const { live } = await mac.read();
+  const [entry] = live.threads;
+  assert.equal(entry.threadId, THREAD);
+  assert.equal(entry.processes, 7);
+  assert.deepEqual(
+    entry.top.map((proc) => [proc.pid, proc.name, proc.cpu]),
+    [
+      [203, "yes", 50],
+      [202, "node · vite", 25],
+      [204, "curl", 10],
+      [205, "node · tsc --watch", 5],
+      [206, "sleep", 2.5],
+    ],
+    "top five by CPU, Slack left out, no secret in any name",
+  );
+  assert.equal(entry.top[0].memBytes, 1024 * 1024);
+});
