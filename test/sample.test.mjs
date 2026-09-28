@@ -29,6 +29,10 @@ function fakeMac() {
     platform: "darwin",
     async exec(command) {
       mac.commands.push(command);
+      if (mac.failNext) {
+        mac.failNext = false;
+        throw new Error("ps: interrupted");
+      }
       return [...mac.procs]
         .map(([pid, p]) => `${pid} ${p.ppid} ${p.pcpu.toFixed(1)} 1024 ${psTime(p.cpuMs)} ${p.start} ${p.command}`)
         .join("\n");
@@ -55,6 +59,7 @@ function fakeMac() {
       mac.ticks.busy += seconds * 1000 * cores;
     }
   };
+  mac.takeReading = takeReading;
   mac.read = (store = false) => takeReading(mac.clockMs, { store });
   return mac;
 }
@@ -66,7 +71,7 @@ function withAgent(mac, pcpu = 40) {
   mac.procs.set(200, { ppid: 1, pcpu, cpuMs: 60_000, start: EARLY, command: `node agent.js BB_THREAD_ID=${THREAD}` });
 }
 
-test("one ps per reading, and the first reading falls back to ps pcpu", async () => {
+test("one ps per reading, and the first reading after a load falls back to ps pcpu", async () => {
   const mac = fakeMac();
   withAgent(mac, 40);
   mac.advance(2);
@@ -91,29 +96,64 @@ test("per-process CPU is CPU time over wall time, as a share of all cores", asyn
   assert.deepEqual(threadCpu(idle.live), {});
 });
 
-test("a reused pid falls back to pcpu instead of spiking", async () => {
+test("a reused pid is a new process, not measured against the old one's time", async () => {
   const mac = fakeMac();
-  mac.procs.set(300, { ppid: 1, pcpu: 1, cpuMs: 1_000, start: EARLY, command: "/usr/bin/old" });
+  mac.procs.set(300, { ppid: 1, pcpu: 1, cpuMs: 100_000, start: EARLY, command: "/usr/bin/old" });
   await mac.read();
-  // Same pid, a different process with far more CPU time than the old one had.
-  mac.procs.set(300, { ppid: 1, pcpu: 20, cpuMs: 500_000, start: LATE, command: "/usr/bin/new" });
+  // Same pid, a different process: its 1 s of CPU time all fell inside the 2 s window.
+  mac.procs.set(300, { ppid: 1, pcpu: 90, cpuMs: 1_000, start: LATE, command: "/usr/bin/new" });
   mac.advance(2);
   const { live } = await mac.read();
-  assert.deepEqual(procCpu(live), { 300: 5 });
+  assert.deepEqual(procCpu(live), { 300: 12.5 });
 });
 
-test("a new process falls back to pcpu and an exited one drops out", async () => {
+test("a new process counts all its CPU time in its first reading and an exited one drops out", async () => {
   const mac = fakeMac();
   mac.procs.set(300, { ppid: 1, pcpu: 0, cpuMs: 1_000, start: EARLY, command: "/usr/bin/leaving" });
   await mac.read();
   mac.procs.delete(300);
-  mac.procs.set(301, { ppid: 1, pcpu: 80, cpuMs: 900, start: LATE, command: "/usr/bin/arriving" });
-  mac.advance(2, { 301: 0 });
+  // Started inside the window and used 1.6 s of one core; ps's pcpu (80) is not used.
+  mac.procs.set(301, { ppid: 1, pcpu: 80, cpuMs: 1_600, start: LATE, command: "/usr/bin/arriving" });
+  mac.advance(2);
   const { live } = await mac.read();
   assert.deepEqual(procCpu(live), { 301: 20 });
 
   mac.advance(2, { 301: 1 });
   assert.deepEqual(procCpu((await mac.read()).live), { 301: 25 });
+});
+
+test("a process is never credited more than every core for the whole window", async () => {
+  const mac = fakeMac();
+  await mac.read();
+  mac.procs.set(302, { ppid: 1, pcpu: 5, cpuMs: 500_000, start: LATE, command: "/usr/bin/odd" });
+  mac.advance(2);
+  assert.deepEqual(procCpu((await mac.read()).live), { 302: 100 });
+});
+
+test("after a failed ps, a process the reading could not see keeps ps pcpu", async () => {
+  const mac = fakeMac();
+  withAgent(mac, 12);
+  await mac.read();
+  mac.failNext = true;
+  mac.advance(2);
+  const failed = await mac.read();
+  assert.deepEqual(failed.live.threads, []);
+  mac.procs.get(200).cpuMs += 4_000;
+  mac.advance(2);
+  // The agent was running all along; the failed reading just could not see it.
+  assert.deepEqual(threadCpu((await mac.read()).live), { [THREAD]: 3 });
+});
+
+test("a peek measures the live window without moving it", async () => {
+  const mac = fakeMac();
+  withAgent(mac);
+  await mac.read();
+  mac.advance(1, { 200: 2 });
+  const peeked = await mac.takeReading(mac.clockMs, { store: false, peek: true });
+  assert.deepEqual(threadCpu(peeked.live), { [THREAD]: 50 });
+  mac.advance(1);
+  // The next reading still covers both seconds, not only the one since the peek.
+  assert.deepEqual(threadCpu((await mac.read()).live), { [THREAD]: 25 });
 });
 
 test("readings too close together keep ps pcpu rather than divide by almost nothing", async () => {

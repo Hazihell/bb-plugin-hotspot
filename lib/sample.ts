@@ -69,8 +69,17 @@ export interface Baseline {
   /** Monotonic clock, ms. */
   clockMs: number;
   ticks: CpuTicks;
-  /** Each process's CPU time in ms, by process key (pid and start time). */
-  times: Map<string, number>;
+  /**
+   * Every process this reading saw, by key (pid and start time), with its
+   * CPU time in ms, or null where that was unknown.
+   */
+  times: Map<string, number | null>;
+  /**
+   * Whether `times` is the whole process table. False before the first
+   * reading and when `ps` failed, so an absent key says nothing about
+   * whether the process is new.
+   */
+  complete: boolean;
 }
 
 /** Below this much wall time between readings, per-process CPU time is too coarse to trust. */
@@ -79,24 +88,34 @@ export const MIN_ELAPSED_MS = 500;
 /**
  * Each row's CPU over the window since `baseline`, in percent of one core:
  * the CPU time it used divided by the wall time between the readings. A
- * process the baseline did not see (new, a reused pid, or the first
- * reading after a load) keeps `ps`'s own figure, and so does every process
- * when the window is too short to measure. A process that exited is simply
- * absent from `rows`.
+ * process a complete baseline did not see started inside the window (new,
+ * or a reused pid), so all its CPU time counts. It keeps `ps`'s own figure
+ * when the baseline is incomplete (the first reading after a load, or a
+ * failed `ps`), when its CPU time or start is unknown, and so does every
+ * process when the window is too short to measure. No process is credited
+ * more than every core for the whole window. A process that exited is
+ * simply absent from `rows`.
  */
-export function cpuSince(rows: readonly ProcessRow[], baseline: Baseline, clockMs: number): ProcessRow[] {
+export function cpuSince(
+  rows: readonly ProcessRow[],
+  baseline: Baseline,
+  clockMs: number,
+  cores: number,
+): ProcessRow[] {
   const elapsed = clockMs - baseline.clockMs;
   if (elapsed < MIN_ELAPSED_MS) return [...rows];
   return rows.map((row) => {
-    const before = row.key === null ? undefined : baseline.times.get(row.key);
-    if (before === undefined || row.cpuMs === null || row.cpuMs < before) return row;
-    return { ...row, cpuPercent: ((row.cpuMs - before) / elapsed) * 100 };
+    if (row.key === null || row.cpuMs === null) return row;
+    const seen = baseline.times.get(row.key);
+    const before = seen === undefined && baseline.complete ? 0 : seen;
+    if (before === undefined || before === null || row.cpuMs < before) return row;
+    return { ...row, cpuPercent: Math.min(((row.cpuMs - before) / elapsed) * 100, cores * 100) };
   });
 }
 
-function timesOf(rows: readonly ProcessRow[] | null): Map<string, number> {
-  const times = new Map<string, number>();
-  for (const row of rows ?? []) if (row.key !== null && row.cpuMs !== null) times.set(row.key, row.cpuMs);
+function timesOf(rows: readonly ProcessRow[] | null): Map<string, number | null> {
+  const times = new Map<string, number | null>();
+  for (const row of rows ?? []) if (row.key !== null) times.set(row.key, row.cpuMs);
   return times;
 }
 
@@ -127,11 +146,19 @@ export interface Measurement {
 /** Less than this much CPU time per core since the last reading is too noisy to trust. */
 const MIN_TICK_MS_PER_CORE = 1_000;
 
-export type TakeReading = (at: number, options: { store: boolean }) => Promise<Measurement>;
+export interface ReadingOptions {
+  /** Also measure the stored window, and start the next one here. */
+  store: boolean;
+  /** Measure the live window without moving it, so the next live reading still covers its full interval. */
+  peek?: boolean;
+}
+
+export type TakeReading = (at: number, options: ReadingOptions) => Promise<Measurement>;
 
 /**
- * Takes readings. Each one advances the live window; one taken with
- * `store` also advances the stored window. Readings must not overlap.
+ * Takes readings. Each one advances the live window unless it peeks; one
+ * taken with `store` also advances the stored window. Readings must not
+ * overlap.
  */
 export function createSampler(options: SamplerOptions = {}): TakeReading {
   const source = options.processes ?? systemProcessSource;
@@ -141,11 +168,11 @@ export function createSampler(options: SamplerOptions = {}): TakeReading {
   const ticksNow = options.ticks ?? readTicks;
   const cores = options.cores ?? Math.max(1, os.cpus().length);
   // Until the first reading no process has a baseline, so every process falls back to `ps`.
-  const loaded: Baseline = { clockMs: clock(), ticks: ticksNow(), times: new Map() };
+  const loaded: Baseline = { clockMs: clock(), ticks: ticksNow(), times: new Map(), complete: false };
   let live = loaded;
   let stored = loaded;
 
-  return async function takeReading(at, { store }) {
+  return async function takeReading(at, { store, peek = false }) {
     const [rows, thermal, memory] = await Promise.all([
       readProcesses(source).catch((error: unknown): ProcessRow[] | null => {
         options.onProcessError?.(error);
@@ -157,13 +184,13 @@ export function createSampler(options: SamplerOptions = {}): TakeReading {
         return null;
       }),
     ]);
-    const now: Baseline = { clockMs: clock(), ticks: ticksNow(), times: timesOf(rows) };
+    const now: Baseline = { clockMs: clock(), ticks: ticksNow(), times: timesOf(rows), complete: rows !== null };
     const load = loadPerCore(cores);
 
     const measure = (since: Baseline): Sample => {
       const kernelCpu = cpuBetween(since.ticks, now.ticks);
       const enoughTicks = now.ticks.total - since.ticks.total >= MIN_TICK_MS_PER_CORE * cores;
-      const measured = rows === null ? null : cpuSince(rows, since, now.clockMs);
+      const measured = rows === null ? null : cpuSince(rows, since, now.clockMs, cores);
       // Right after a load the tick interval is too short to mean anything, so
       // the process sum stands in; without `ps`, the short interval is all there is.
       const psCpu =
@@ -196,7 +223,7 @@ export function createSampler(options: SamplerOptions = {}): TakeReading {
     };
 
     const measurement: Measurement = { live: measure(live), stored: store ? measure(stored) : null };
-    live = now;
+    if (!peek) live = now;
     if (store) stored = now;
     return measurement;
   };
