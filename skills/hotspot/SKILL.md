@@ -1,14 +1,17 @@
 ---
 name: hotspot
-description: Answer when the user's Mac ran hot and which BB thread caused it, using the Hotspot plugin's `hotspot_history` tool or `bb hotspot` CLI. Use when the user asks why the Mac was hot, loud, throttled or slow at some time, or which thread is using the CPU now.
+description: Answer when the user's Mac ran hot and which BB thread caused it, using the Hotspot plugin's `hotspot_history` tool or `bb hotspot` CLI. Use when the user asks why the Mac was hot, loud, throttled or slow at some time, or which thread is using the CPU or memory now.
 ---
 
 # Hotspot
 
 Hotspot samples the Mac BB's server runs on, every 60 seconds by default: the
-macOS thermal pressure level, machine-wide CPU, load per core, the five BB
-threads using the most CPU, and the five busiest processes that belong to no
-thread. It keeps seven days of samples and records **hot episodes**.
+macOS thermal pressure level, machine-wide CPU, load per core, memory (used
+%, app, wired and compressed memory, swap used, and the kernel's memory
+pressure level: normal, warn or critical), the five BB threads using the
+most CPU with each one's resident memory, and the five busiest processes
+that belong to no thread. It keeps seven days of samples and records **hot
+episodes**. Memory does not open or close episodes.
 
 An episode opens after three consecutive hot samples. A sample is hot when
 thermal pressure is above nominal or CPU is at or above the threshold (80% of
@@ -24,9 +27,11 @@ Call `hotspot_history` with a window around the time the user names:
 - `until`: same forms, default now.
 - `limit`: most episodes to list, 1–20, default 5.
 
-It returns a summary of the whole window (average and peak CPU, peak thermal
-level, busiest threads) and every episode overlapping it with its ranked
-culprits. When there is no episode, the window summary still says what was
+It returns a summary of the whole window (average and peak CPU, average and
+peak memory used, peak swap, worst memory pressure, peak thermal level, and
+the busiest threads with their CPU and peak memory) and every episode
+overlapping it with its ranked culprits. Samples taken before memory was
+recorded say "Memory: not recorded". When there is no episode, the window summary still says what was
 busy. Name the culprit thread by title and give its id as `@thread:<id>` so
 BB renders a link.
 
@@ -38,7 +43,9 @@ bb hotspot episodes [--since 24h] [--until <time>] [--limit 10] [--json]
 bb hotspot kill <threadId> [--yes] [--json]
 ```
 
-`status` prints the latest sample and the episode in progress, if any.
+`status` prints the latest sample (including a memory line and each
+thread's memory) and the episode in progress, if any; `--json` carries the
+full memory reading under `latest.memory` and `memBytes` per thread.
 `episodes` lists episodes newest first; `--limit` is 1–50 and the JSON form
 keeps the top five culprits per episode.
 
@@ -94,14 +101,21 @@ counts (`bb plugin logs hotspot`).
 
 ## In the BB window
 
-The sidebar footer shows a dot coloured by thermal level (green nominal,
-amber moderate, red heavy or worse) and machine CPU, plus the level and the
-top thread's title while hot or over the CPU threshold. Hovering shows the
-full line; clicking opens a popover that leads with a verdict (running
-cool, warming up, working hard or running hot, and the thread to blame),
-then the five busiest threads (Open, Stop turn, Kill processes…), other
+The sidebar footer shows Hotspot's flame and labelled figures, `CPU 16%`
+and `MEM 62%`. The flame is grey while calm, amber when warm or busy, red
+when hot; a word (`Hot`, `Warm`, `Busy`) and the top thread's title join
+the figures when they fit. In the usual 320px sidebar the two figures stack
+on two lines with `Hot` beside them; narrower, the word goes, then MEM (or
+CPU, when only memory is flagged). A figure never shows without its label.
+A figure turns red at the CPU threshold, and MEM turns amber or red under
+kernel memory pressure. Hovering shows the full line; clicking opens a
+popover that leads with a verdict (running cool, warming up, working hard
+or running hot, and the thread to blame), then heat, CPU, memory (with
+swap) and load per core with a line for the last hour, then the five
+busiest threads with CPU and memory (Open, Stop turn, Kill processes…), other
 busy processes, the last three episodes ("hot spells" in the UI; each
-opens on the Hotspot page) and a link to the page. On a phone the
+opens on the Hotspot page) and a link to the page. The page adds a memory
+plot under the CPU timeline. On a phone the
 indicator is in the sidebar drawer's footer and the popover is a bottom
 sheet.
 
@@ -123,6 +137,11 @@ Set with `bb plugin config hotspot set <key> <value>`:
   comes from `ps`, which on macOS is a decaying average over about a minute,
   so a burst shows up late and fades slowly. Machine CPU is exact over the
   sample interval.
+- Memory used is Activity Monitor's Memory Used (app + wired + compressed)
+  over physical memory, read from `vm_stat` and `sysctl`; on Linux it is
+  total minus `MemAvailable`, with no pressure level. A thread's memory is
+  the resident size summed over its processes, so pages they share are
+  counted more than once.
 - Thermal pressure is a level (nominal, moderate, heavy, trapping, sleeping),
   not a temperature; degree readings need root. On Linux it is unknown and
   only the CPU rule applies; thread attribution there reads

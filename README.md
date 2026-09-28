@@ -3,26 +3,36 @@
 Tells you when your Mac ran hot and which BB thread did it.
 
 A background service samples every minute: the macOS thermal pressure level
-(`notifyutil`), machine-wide CPU and load, and one `ps` table, rolled up into
-the five BB threads and five other processes using the most CPU. Three hot
+(`notifyutil`), machine-wide CPU and load, memory (used %, app, wired and
+compressed memory, swap used and the kernel's memory pressure level, from
+`vm_stat` and `sysctl`), and one `ps` table, rolled up into the five BB
+threads and five other processes using the most CPU, with each thread's
+resident memory. Three hot
 samples in a row (thermal pressure above nominal, or CPU at 80% of all cores)
 open a **hot episode**; three normal ones close it. Each episode keeps its
 culprit threads, ranked by CPU summed across the episode. When one opens, BB
 shows a toast naming the top thread.
 
-The sidebar footer always shows a heat dot and machine CPU, and the level
-and top thread while hot; hover for the full line. Clicking it opens a
-popover that leads with the verdict ("Running hot since 2:13 PM, mostly
-<thread>"), then the busiest threads, where each one can be opened, have its
+The sidebar footer always shows Hotspot's flame and labelled figures, `CPU
+16%` and `MEM 62%`. The flame turns amber or red with the heat, and a word
+(`Hot`, `Warm`, `Busy`) and the top thread join the figures when there is
+room. In the 320px sidebar beside other readouts the two figures stack on
+two short lines; narrower still, the word goes first, then one figure, but
+a figure never appears without its label. Hover for the full line. Clicking
+it opens a popover that leads with the verdict ("Running hot since 2:13 PM,
+mostly <thread>"), then a numbers row (heat, CPU, memory with swap, load per
+core, each with a line for the last hour and colour only when it crosses a
+line), then the busiest threads with CPU and memory, where each one can be opened, have its
 running turn stopped, or have its work processes killed after a
 confirmation that names what gets SIGTERM and lists what is spared. On a
 phone (BB Connect) the indicator sits in the sidebar drawer's footer, the
 popover opens as a bottom sheet with 44px targets, and the drawer closes
 when you jump to a thread or the page.
 
-The **Hotspot** page in the sidebar shows the same verdict, a 24-hour or
-7-day timeline of CPU with the thermal level beneath it and hot spells
-(episodes) shaded, and the list of hot spells. Hover, tap or step through
+The **Hotspot** page in the sidebar shows the same verdict and numbers row,
+a 24-hour or 7-day timeline of CPU with the thermal level beneath it and hot
+spells (episodes) shaded, a shorter memory plot under it on the same time
+axis, and the list of hot spells. Hover, tap or step through
 the chart with the arrow keys; selecting a shaded band, or a recent hot
 spell in the popover, opens that episode's culprits. Agents answer "why was my Mac hot at 3pm?" with the
 `hotspot_history` tool, and `bb hotspot status` / `bb hotspot episodes` do the
@@ -49,13 +59,16 @@ signalling processes itself. Set `allowKill` to `false` to remove the action.
 
 `server.ts` is the sampler loop, RPC, tool and CLI; `lib/` holds the pieces
 with tests: `procs.ts` (process table and thread attribution), `thermal.ts`,
+`memory.ts` (memory and swap),
 `sample.ts`, `episodes.ts` (the detector, a pure state machine), `store.ts`
 (the plugin's SQLite database), `report.ts` (text and timeline shaping),
-`kill.ts` (the kill planner and apply) and `footer.ts` (the footer wording).
+`kill.ts` (the kill planner and apply) and `footer.ts` (the footer wording
+and how it narrows).
 `lib/present.ts` holds the verdict and the time, tick and kill-summary
 wording the UI shows. `app.tsx` is the page, the sidebar badge and the
 toast; `components/footer-indicator.tsx` is the footer indicator and
-popover, `components/kill-confirm.tsx` the kill confirmation,
+popover, `components/metrics.tsx` the numbers row,
+`components/kill-confirm.tsx` the kill confirmation,
 `components/timeline-chart.tsx` the chart and `components/heat.tsx` the
 shared verdict block and heat colours.
 `components/ui/` is vendored source you own.
@@ -71,8 +84,9 @@ npm test                   # unit tests
 
 ## Credits
 
-Process parsing and thread attribution in `lib/procs.ts`, and the plan/apply
-pattern in `lib/kill.ts`, are adapted from
+Process parsing and thread attribution in `lib/procs.ts`, the plan/apply
+pattern in `lib/kill.ts`, and the memory reader in `lib/memory.ts` are
+adapted from
 [Ballast](https://github.com/braedonsaunders/bb-plugin-ballast) by Braedon
 Saunders, under the MIT License. See `NOTICE`. The footer placement follows
 the approach of the usage-tracker plugin, which also lives in BB's footer
