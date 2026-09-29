@@ -290,11 +290,13 @@ const processLine = (entry: { name: string; pid: number; cpu: number }) =>
 /** A kill plan as the CLI prints it: what gets SIGTERM and what is spared, with the reason. */
 export function describeKillPlan(plan: KillPlanView): string[] {
   const name = plan.title === null ? plan.threadId : `"${plan.title}" (${plan.threadId})`;
+  const selected = plan.selected;
+  const what = selected === null ? name : `${selected.name ?? "process"} (pid ${selected.pid}) in ${name}`;
   const lines =
     plan.targets.length === 0
-      ? [`Nothing to kill in ${name}.`]
+      ? [selected?.reason == null ? `Nothing to kill in ${name}.` : `Nothing to kill: ${what} is ${selected.reason}.`]
       : [
-          `Kill plan for ${name}: ${plan.targets.length} process(es) get SIGTERM, then SIGKILL after 5 s if still running:`,
+          `Kill plan for ${what}: ${plan.targets.length} process(es) get SIGTERM, then SIGKILL after 5 s if still running:`,
           ...plan.targets.map(processLine),
         ];
   if (plan.excluded.length > 0) {

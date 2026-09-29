@@ -12,6 +12,8 @@ import { z } from "zod";
 /** One of a thread's busiest processes in a reading (the popover's drill-down). */
 export const threadProcessSchema = z.object({
   pid: z.number(),
+  /** Pid and start time (lib/procs.ts, ProcessRow.key), for killing this one process; null when unknown. */
+  key: z.string().nullable().default(null),
   /** A safe short name (lib/proc-name.ts), never the command line. */
   name: z.string(),
   /** Share of the whole machine, 0–100. */

@@ -120,6 +120,73 @@ test("bb hotspot kill --yes applies the plan when a person runs it in a terminal
   assert.equal(signals.length, 2);
 });
 
+/** A second job beside the dev server under the same shell. */
+const SLEEP = line(312, 310, "sleep 600");
+const key = (pid) => `${pid}@${START}`;
+
+test("killTargets names what the thread's kill would target, by key, and signals nothing", async () => {
+  const { harness, signals } = await load({ extra: [SLEEP] });
+  const { keys } = await harness.callRpc("killTargets", { threadId: THREAD });
+  assert.deepEqual(keys.sort(), [key(310), key(311), key(312)].sort());
+  assert.deepEqual(signals, []);
+  await assert.rejects(harness.callRpc("killTargets", { threadId: "../../etc" }));
+});
+
+test("killPlan with a process key kills that process and nothing beside it", async () => {
+  const { harness, signals } = await load({ extra: [SLEEP] });
+  const plan = await harness.callRpc("killPlan", { threadId: THREAD, process: key(311) });
+  assert.deepEqual(plan.targets.map((target) => [target.pid, target.key]), [[311, key(311)]]);
+  assert.deepEqual(plan.selected, { pid: 311, name: "node", reason: null });
+  const result = await harness.callRpc("killApply", { planId: plan.planId });
+  assert.equal(result.terminated, 1);
+  assert.deepEqual(signals, [[311, "SIGTERM"]]);
+  await assert.rejects(harness.callRpc("killApply", { planId: plan.planId }), /already used/);
+});
+
+test("killPlan with a key that is not a target plans nothing: spared, reused pid or malformed", async () => {
+  const { harness, signals } = await load({ extra: [SLEEP] });
+  const agent = await harness.callRpc("killPlan", { threadId: THREAD, process: key(300) });
+  assert.deepEqual(agent.targets, []);
+  assert.match(agent.selected.reason, /^spared: the thread's agent/);
+  const reused = await harness.callRpc("killPlan", { threadId: THREAD, process: "311@Tue Sep 29 09:00:00 2026" });
+  assert.deepEqual(reused.targets, []);
+  assert.match(reused.selected.reason, /another process/);
+  await assert.rejects(harness.callRpc("killPlan", { threadId: THREAD, process: "311" }));
+  await assert.rejects(harness.callRpc("killPlan", { threadId: THREAD, process: "311@$(rm -rf ~)" }));
+  await harness.callRpc("killApply", { planId: agent.planId });
+  assert.deepEqual(signals, []);
+});
+
+test("bb hotspot kill --pid plans one process, refuses --yes from an agent, and applies it from a terminal", async () => {
+  const dryRun = await load({ extra: [SLEEP] });
+  const dry = await dryRun.harness.runCli(["kill", THREAD, "--pid", "312"]);
+  assert.equal(dry.exitCode, 0);
+  assert.match(dry.stdout, /Kill plan for sleep \(pid 312\) in "Home page" \(thr_target0001\): 1 process\(es\) get SIGTERM/);
+  const refused = await dryRun.harness.runCli(["kill", THREAD, "--pid", "312", "--yes"]);
+  assert.notEqual(refused.exitCode, 0);
+  assert.match(refused.stderr + refused.stdout, /Refusing --yes/);
+  const spared = await dryRun.harness.runCli(["kill", THREAD, "--pid", "300", "--yes"]);
+  assert.equal(spared.exitCode, 0);
+  assert.match(spared.stdout, /Nothing to kill: claude \(pid 300\) in "Home page" \(thr_target0001\) is spared: the thread's agent/);
+  const missing = await dryRun.harness.runCli(["kill", THREAD, "--pid", "4242"]);
+  assert.match(missing.stdout, /Nothing to kill: process \(pid 4242\) .* is no longer running/);
+  assert.deepEqual(dryRun.signals, []);
+
+  const cli = `node /Applications/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app/host-daemon/dist/bb hotspot kill ${THREAD} --pid 312 --yes`;
+  const { harness, signals } = await load({
+    extra: [
+      SLEEP,
+      line(900, 1, "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"),
+      line(902, 900, "-zsh", 0, "ttys003"),
+      line(903, 902, cli, 0, "ttys003"),
+    ],
+  });
+  const applied = await harness.runCli(["kill", THREAD, "--pid", "312", "--yes"]);
+  assert.equal(applied.exitCode, 0);
+  assert.match(applied.stdout, /1 exited on SIGTERM, 0 needed SIGKILL, 0 refused/);
+  assert.deepEqual(signals, [[312, "SIGTERM"]]);
+});
+
 test("stopTurn stops a running thread and refuses an idle one", async () => {
   const running = await load();
   assert.deepEqual(await running.harness.callRpc("stopTurn", { threadId: THREAD }), { ok: true });

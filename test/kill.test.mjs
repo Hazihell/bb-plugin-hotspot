@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyKill, checkInteractiveCaller, isInteractiveShell, parseKillLine, planKill, readKillRows } from "../lib/kill.ts";
+import { applyKill, checkInteractiveCaller, isInteractiveShell, narrowPlan, parseKillLine, planKill, processKey, readKillRows } from "../lib/kill.ts";
 
 const THREAD = "thr_target0001";
 const OTHER = "thr_other00001";
@@ -295,7 +295,7 @@ test("an app bundle anywhere is a wall; an argument naming a bundle is not", () 
 
 test("a thread with no work of its own plans nothing", () => {
   const plan = planKill(rowsOf(table()), "thr_nothing0001", context);
-  assert.deepEqual(plan, { threadId: "thr_nothing0001", targets: [], excluded: [] });
+  assert.deepEqual(plan, { threadId: "thr_nothing0001", targets: [], excluded: [], selected: null });
 });
 
 test("the plugin's own process chain is never a target even inside the thread", () => {
@@ -396,6 +396,74 @@ test("SIGKILL goes only to verified survivors after the grace period", async () 
   );
   assert.equal(result.killed, 1);
   assert.equal(result.terminated, 3);
+});
+
+const keyOf = (pid, start = START) => `${pid}@${start}`;
+
+test("a plan narrowed to one process keeps it and the targets it started, children first", () => {
+  // 314 is under the dev server but carries another thread's id: not this thread's.
+  const rows = rowsOf(table({ 314: line(314, 311, `node worker.js BB_THREAD_ID=${OTHER}`) }));
+  const whole = planKill(rows, THREAD, context);
+  const narrowed = narrowPlan(whole, rows, keyOf(311));
+  assert.deepEqual(narrowed.targets.map((target) => target.pid), [312, 311]);
+  assert.deepEqual(narrowed.selected, { pid: 311, name: "node · next dev", reason: null });
+  assert.deepEqual(narrowed.excluded, []);
+  // The shell takes everything it started; a leaf takes only itself.
+  assert.deepEqual(narrowPlan(whole, rows, keyOf(310)).targets.map((target) => target.pid), [312, 311, 313, 310]);
+  assert.deepEqual(narrowPlan(whole, rows, keyOf(312)).targets.map((target) => target.pid), [312]);
+  assert.equal(processKey(whole.targets[0]), keyOf(312));
+});
+
+test("narrowing only removes: a descendant the thread's plan spares stays spared", () => {
+  const rows = rowsOf(table());
+  const whole = planKill(rows, THREAD, context);
+  // Were the worker spared (say by a rule added later), killing its parent must not take it.
+  const worker = whole.targets.find((target) => target.pid === 312);
+  const sparing = {
+    ...whole,
+    targets: whole.targets.filter((target) => target !== worker),
+    excluded: [...whole.excluded, { pid: 312, name: worker.name, cpuPercent: 0, reason: "a test rule" }],
+  };
+  const narrowed = narrowPlan(sparing, rows, keyOf(311));
+  assert.deepEqual(narrowed.targets.map((target) => target.pid), [311]);
+  assert.deepEqual(narrowed.excluded.map((entry) => entry.pid), [312]);
+  for (const target of narrowed.targets) assert.ok(sparing.targets.includes(target));
+});
+
+test("a selected process that is not a target yields no targets, and says why", () => {
+  const rows = rowsOf(table());
+  const whole = planKill(rows, THREAD, context);
+  const cases = [
+    // The agent itself: spared by the thread's plan.
+    [keyOf(300), /^spared: the thread's agent/],
+    // Another thread's dev server.
+    [keyOf(401), /^not one of this thread's processes$/],
+    // The dev server's pid, but started at another time: a reused pid.
+    [keyOf(311, "Tue Sep 29 09:00:00 2026"), /^no longer running \(its pid now belongs to another process\)$/],
+    [keyOf(99999), /^no longer running$/],
+    ["garbage", /^no longer running$/],
+  ];
+  for (const [key, reason] of cases) {
+    const narrowed = narrowPlan(whole, rows, key);
+    assert.deepEqual(narrowed.targets, [], key);
+    assert.match(narrowed.selected.reason, reason, key);
+  }
+  assert.equal(narrowPlan(whole, rows, keyOf(99999)).selected.name, null);
+});
+
+test("apply of a narrowed plan signals nothing outside it", async () => {
+  const fake = machine(table());
+  const rows = rowsOf(table());
+  const narrowed = narrowPlan(planKill(rows, THREAD, context), rows, keyOf(311));
+  // 311 and 312 ignore SIGTERM; the rest of the thread keeps running.
+  const result = await applyKill(narrowed, fake.deps({ sleep: async () => undefined }));
+  assert.deepEqual(fake.signals, [
+    [312, "SIGTERM"],
+    [311, "SIGTERM"],
+    [312, "SIGKILL"],
+    [311, "SIGKILL"],
+  ]);
+  assert.equal(result.killed, 2);
 });
 
 test("readKillRows uses /proc environ off macOS", async () => {

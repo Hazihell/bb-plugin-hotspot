@@ -29,7 +29,18 @@ import {
   rpcContract,
   threadIdSchema,
 } from "./lib/contract";
-import { type KillPlan, type KillRow, type PlanContext, type Signal, applyKill, checkInteractiveCaller, planKill, readKillRows } from "./lib/kill";
+import {
+  type KillPlan,
+  type KillRow,
+  type PlanContext,
+  type Signal,
+  applyKill,
+  checkInteractiveCaller,
+  narrowPlan,
+  planKill,
+  processKey,
+  readKillRows,
+} from "./lib/kill";
 import { type MonitorRunner, findMonitor, openMonitor, systemMonitorRunner } from "./lib/monitor";
 import { displayCommand } from "./lib/proc-name";
 import { systemProcessSource } from "./lib/procs";
@@ -396,15 +407,25 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
     return known.get(threadId) ?? null;
   }
 
-  async function makePlan(threadId: string): Promise<KillPlanView> {
+  function planContext(rows: readonly KillRow[]): PlanContext {
+    return { uid: process.getuid?.() ?? -1, selfPids: ancestry(rows, selfPid) };
+  }
+
+  /**
+   * The thread's plan, or with `select` the plan narrowed to one process:
+   * by key from the popover, or by pid from the CLI, which takes that pid's
+   * start time from the same table the plan is made from.
+   */
+  async function makePlan(threadId: string, select?: { key: string } | { pid: number }): Promise<KillPlanView> {
     await requireKillAllowed();
     const title = await threadTitle(threadId);
     const rows = await killDeps.readRows();
-    const context: PlanContext = {
-      uid: process.getuid?.() ?? -1,
-      selfPids: ancestry(rows, selfPid),
-    };
-    const plan = planKill(rows, threadId, context);
+    const context = planContext(rows);
+    const whole = planKill(rows, threadId, context);
+    const pidRow = select !== undefined && "pid" in select ? rows.find((row) => row.pid === select.pid) : undefined;
+    const key =
+      select === undefined ? null : "key" in select ? select.key : pidRow === undefined ? `${select.pid}@` : processKey(pidRow);
+    const plan = key === null ? whole : narrowPlan(whole, rows, key);
     const now = Date.now();
     for (const [id, entry] of plans) if (entry.expiresAt <= now) plans.delete(id);
     while (plans.size >= MAX_PLANS) plans.delete(plans.keys().next().value as string);
@@ -421,6 +442,7 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
         name: target.name,
         cpu: machineShare(target.cpuPercent),
         command: displayCommand(target.argv),
+        key: processKey(target),
       })),
       excluded: plan.excluded.map((entry) => ({
         pid: entry.pid,
@@ -428,7 +450,16 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
         cpu: machineShare(entry.cpuPercent),
         reason: entry.reason,
       })),
+      selected: plan.selected,
     };
+  }
+
+  /** The keys of what the thread's plan would target now; plans nothing to apply. */
+  async function killTargets(threadId: string): Promise<{ keys: string[] }> {
+    await requireKillAllowed();
+    const rows = await killDeps.readRows();
+    const plan = planKill(rows, threadId, planContext(rows));
+    return { keys: plan.targets.map(processKey) };
   }
 
   async function applyPlan(planId: string): Promise<KillResultView> {
@@ -478,7 +509,8 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
         allowKill: (await settings.get()).allowKill,
       };
     },
-    killPlan: ({ threadId }) => makePlan(threadId),
+    killPlan: ({ threadId, process: key }) => makePlan(threadId, key === undefined ? undefined : { key }),
+    killTargets: ({ threadId }) => killTargets(threadId),
     killApply: ({ planId }) => applyPlan(planId),
     async stopTurn({ threadId }) {
       await threadTitle(threadId);
@@ -652,6 +684,12 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
           summary: "Plan (and with --yes, apply) killing a thread's work processes: dev servers, builds, test runners",
           positionals: [{ name: "threadId", description: "The thread whose processes to stop (thr_…)", required: true }],
           options: {
+            pid: {
+              type: "integer",
+              min: 1,
+              max: 2_147_483_647,
+              description: "Only this process and the targets it started; nothing the thread's plan spares",
+            },
             yes: { type: "boolean", description: "Apply the plan: SIGTERM, then SIGKILL after 5 s for survivors" },
             json: { type: "boolean", description: "Emit JSON" },
           },
@@ -663,7 +701,8 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
                 hint: "Pass an id like thr_abc12345; `bb hotspot status` lists the busiest threads.",
               });
             }
-            const plan = await makePlan(threadId.data);
+            const pid = input.options.pid;
+            const plan = await makePlan(threadId.data, pid === undefined ? undefined : { pid });
             if (!input.options.yes || plan.targets.length === 0) {
               if (input.options.json) return { exitCode: 0, stdout: JSON.stringify({ plan, applied: null }) };
               const lines = describeKillPlan(plan);

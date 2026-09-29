@@ -146,6 +146,15 @@ test("kill plans, their results and bb hotspot kill show no secret", async () =>
   clean("kill plan", JSON.stringify(plan));
   clean("bb hotspot kill", (await harness.runCli(["kill", THREAD])).stdout);
   clean("bb hotspot kill --json", (await harness.runCli(["kill", THREAD, "--json"])).stdout);
-  clean("kill result", JSON.stringify(await harness.callRpc("killApply", { planId: plan.planId })));
+  // One process at a time, each named as it runs.
+  for (const [index] of LEAKS.entries()) {
+    const one = await harness.callRpc("killPlan", { threadId: THREAD, process: `${400 + index}@${START}` });
+    assert.notEqual(one.selected.name, null);
+    clean("one-process kill plan", JSON.stringify(one));
+    clean("bb hotspot kill --pid", (await harness.runCli(["kill", THREAD, "--pid", String(400 + index)])).stdout);
+  }
+  // Each call above minted a plan and the oldest were let go: apply a fresh one.
+  const fresh = await harness.callRpc("killPlan", { threadId: THREAD });
+  clean("kill result", JSON.stringify(await harness.callRpc("killApply", { planId: fresh.planId })));
   clean("logs", JSON.stringify(harness.inspection.logEntries));
 });

@@ -17,6 +17,8 @@ export type Range = (typeof RANGES)[number];
 
 /** A BB thread id; anything else from the frontend is refused before it reaches the SDK. */
 export const threadIdSchema = z.string().regex(/^thr_[a-z0-9]{8,64}$/);
+/** A process's pid and `ps` start time (lib/kill.ts, processKey), as the drill-down's rows carry it. */
+export const processKeySchema = z.string().regex(/^\d{1,10}@[A-Za-z0-9: ]{1,40}$/);
 
 const killProcessSchema = z.object({
   pid: z.number(),
@@ -32,8 +34,14 @@ export const killPlanSchema = z.object({
   expiresAt: z.number(),
   threadId: z.string(),
   title: z.string().nullable(),
-  targets: z.array(killProcessSchema.extend({ command: z.string() })),
+  targets: z.array(killProcessSchema.extend({ command: z.string(), key: z.string() })),
   excluded: z.array(killProcessSchema.extend({ reason: z.string() })),
+  /**
+   * Null for the whole thread. For one process: which, and why nothing is
+   * targeted when it no longer can be (`reason`); `name` is null when no
+   * process has that identity now.
+   */
+  selected: z.object({ pid: z.number(), name: z.string().nullable(), reason: z.string().nullable() }).nullable(),
 });
 
 export const killResultSchema = z.object({
@@ -82,9 +90,18 @@ export const rpcContract = defineRpcContract({
     input: z.object({ reason: z.enum(WATCH_REASONS) }).strict().nullable(),
     output: z.object({ leaseMs: z.number(), liveIntervalMs: z.number() }),
   },
+  /**
+   * With `process`, the thread's plan narrowed to that process and the
+   * targets it started (lib/kill.ts, narrowPlan).
+   */
   killPlan: {
-    input: z.object({ threadId: threadIdSchema }).strict(),
+    input: z.object({ threadId: threadIdSchema, process: processKeySchema.optional() }).strict(),
     output: killPlanSchema,
+  },
+  /** Which processes a thread's kill would target now, by key, so the drill-down offers Kill only on those. Signals nothing and mints no plan. */
+  killTargets: {
+    input: z.object({ threadId: threadIdSchema }).strict(),
+    output: z.object({ keys: z.array(z.string()) }),
   },
   killApply: {
     input: z.object({ planId: z.string().uuid() }).strict(),

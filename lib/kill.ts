@@ -128,11 +128,31 @@ export interface KillExclusion {
   reason: string;
 }
 
+/** The one process a narrowed plan was asked for (narrowPlan). */
+export interface KillSelection {
+  pid: number;
+  /** The safe display name, or null when no process has the selected identity now. */
+  name: string | null;
+  /** Why nothing is targeted, or null when the process is a target. */
+  reason: string | null;
+}
+
 export interface KillPlan {
   threadId: string;
   /** Children before parents, so a supervisor cannot respawn what was just stopped. */
   targets: KillTarget[];
   excluded: KillExclusion[];
+  /** Null for the whole thread; set when narrowed to one process and what it started. */
+  selected: KillSelection | null;
+}
+
+/**
+ * A process's identity across readings: its pid and `ps` start time, so a
+ * reused pid is a different process. The drill-down's rows carry the same
+ * key (lib/procs.ts), so the popover can name the process to kill with it.
+ */
+export function processKey(row: Pick<KillRow, "pid" | "startedAt">): string {
+  return `${row.pid}@${row.startedAt}`;
 }
 
 const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"]);
@@ -348,7 +368,52 @@ export function planKill(rows: readonly KillRow[], threadId: string, context: Pl
       .map((row) => ({ pid: row.pid, name: row.label, cpuPercent: row.cpuPercent, reason: reasons.get(row.pid) ?? "" })),
     ...shadowed,
   ];
-  return { threadId, targets, excluded };
+  return { threadId, targets, excluded, selected: null };
+}
+
+/**
+ * The thread's plan cut down to one process and the targets it started,
+ * however deep. Only removes: every target kept is one `plan` already had,
+ * so each wall and rule behind the thread's plan still holds. `rows` must be
+ * the table `plan` was made from. When the key names no target (it exited,
+ * its pid was reused, it is spared or not the thread's), nothing is targeted
+ * and `selected.reason` says why.
+ */
+export function narrowPlan(plan: KillPlan, rows: readonly KillRow[], key: string): KillPlan {
+  const pid = Number(/^(\d+)@/.exec(key)?.[1] ?? -1);
+  const row = rows.find((candidate) => processKey(candidate) === key);
+  const nothing = (name: string | null, reason: string, excluded: KillExclusion[] = []): KillPlan => ({
+    threadId: plan.threadId,
+    targets: [],
+    excluded,
+    selected: { pid, name, reason },
+  });
+  // Each reason reads after "<name> is".
+  if (row === undefined) {
+    const reused = rows.some((candidate) => candidate.pid === pid);
+    return nothing(null, reused ? "no longer running (its pid now belongs to another process)" : "no longer running");
+  }
+  if (!plan.targets.some((target) => processKey(target) === key)) {
+    const spared = plan.excluded.find((entry) => entry.pid === row.pid);
+    return spared === undefined
+      ? nothing(row.label, "not one of this thread's processes")
+      : nothing(row.label, `spared: ${spared.reason}`, [spared]);
+  }
+  const byPid = new Map(rows.map((candidate) => [candidate.pid, candidate] as const));
+  const within = (start: number) => {
+    const seen = new Set<number>();
+    for (let node = byPid.get(start); node !== undefined && !seen.has(node.pid); node = byPid.get(node.ppid)) {
+      if (node === row) return true;
+      seen.add(node.pid);
+    }
+    return false;
+  };
+  return {
+    threadId: plan.threadId,
+    targets: plan.targets.filter((target) => within(target.pid)),
+    excluded: plan.excluded.filter((entry) => within(entry.pid)),
+    selected: { pid: row.pid, name: row.label, reason: null },
+  };
 }
 
 /** Same pid, same start time, same command line: the process the plan named. */
