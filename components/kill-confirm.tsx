@@ -1,11 +1,12 @@
 // Step two of a kill: what gets signalled and what is spared, then confirm.
 // The server decides every target; this only shows the plan and returns the
-// plan id it was given. The actions stay pinned below the list so Cancel and
+// plan id it was given. A plan for one process (a drill-down row) is worded
+// for that process and whatever it started that goes with it. The actions stay pinned below the list so Cancel and
 // Kill never scroll out of reach.
 import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
 import { useRpc } from "@get-bb/plugin-sdk/app";
-import type { KillPlanView, rpcContract } from "../lib/contract";
+import type { KillPlanView, KillResultView, rpcContract } from "../lib/contract";
 import { processSummary } from "../lib/present";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -14,27 +15,32 @@ import { Icon } from "./ui/icon";
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
-export function KillConfirm({ plan, onDone }: { plan: KillPlanView; onDone: () => void }) {
+export function KillConfirm({ plan, onDone }: { plan: KillPlanView; onDone: (result: KillResultView | null) => void }) {
   const rpc = useRpc<typeof rpcContract>();
   const [applying, setApplying] = useState(false);
   const title = plan.title ?? plan.threadId;
   const count = plan.targets.length;
+  const one = plan.selected;
+  const oneName = one === null ? null : (one.name ?? `pid ${one.pid}`);
+  const along = one === null ? [] : plan.targets.filter((target) => target.pid !== one.pid);
 
   const apply = () => {
     setApplying(true);
     rpc.call("killApply", { planId: plan.planId }).then(
       (result) => {
         const summary = `${result.terminated} exited, ${result.killed} needed SIGKILL, ${result.refused} refused`;
-        toast.success(`Killed processes in ${title}`, { description: summary });
-        onDone();
+        toast.success(oneName === null ? `Killed processes in ${title}` : `Killed ${oneName} in ${title}`, { description: summary });
+        onDone(result);
       },
       (error: unknown) => {
         toast.error("Kill failed", { description: errorText(error) });
-        onDone();
+        onDone(null);
       },
     );
   };
 
+  const heading =
+    count === 0 ? "Nothing to kill" : oneName !== null ? `Kill ${oneName}?` : `Kill ${plural(count, "process", "processes")}?`;
   return (
     <div className="flex max-h-[min(34rem,80dvh)] flex-col text-sm">
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
@@ -43,19 +49,33 @@ export function KillConfirm({ plan, onDone }: { plan: KillPlanView; onDone: () =
             <Icon name="AlertTriangle" className="size-4" />
           </span>
           <div className="min-w-0">
-            <h2 className="text-base font-semibold text-foreground">
-              {count === 0 ? "Nothing to kill" : `Kill ${plural(count, "process", "processes")}?`}
-            </h2>
+            <h2 className="break-words text-base font-semibold text-foreground">{heading}</h2>
             <p className="line-clamp-2 break-words text-muted-foreground" title={title}>
               in {title}
             </p>
           </div>
         </div>
 
-        {count === 0 ? (
+        {one !== null && count === 0 ? (
+          <p className="text-muted-foreground">
+            {oneName} is {one.reason ?? "not a process this thread's kill would stop"}, so nothing will be signalled.
+          </p>
+        ) : count === 0 ? (
           <p className="text-muted-foreground">
             Everything running in this thread is its agent, BB, an app or a helper, and those are always spared.
           </p>
+        ) : one !== null ? (
+          <>
+            {along.length === 0 ? null : (
+              <p className="font-medium text-foreground">
+                With it, {plural(along.length, "process", "processes")} it started: {processSummary(along.map((target) => target.name))}
+              </p>
+            )}
+            <p className="text-muted-foreground">
+              {along.length === 0 ? "It gets" : "They get"} SIGTERM now and SIGKILL after 5 seconds if still running. The
+              rest of the thread keeps running.
+            </p>
+          </>
         ) : (
           <>
             <p className="font-medium text-foreground">{processSummary(plan.targets.map((target) => target.name))}</p>
@@ -82,7 +102,7 @@ export function KillConfirm({ plan, onDone }: { plan: KillPlanView; onDone: () =
         <Button
           variant="outline"
           className="max-md:pointer-coarse:h-11 max-md:pointer-coarse:flex-1"
-          onClick={onDone}
+          onClick={() => onDone(null)}
           disabled={applying}
           autoFocus
         >
@@ -95,7 +115,7 @@ export function KillConfirm({ plan, onDone }: { plan: KillPlanView; onDone: () =
             onClick={apply}
             disabled={applying}
           >
-            {applying ? "Killing…" : `Kill ${plural(count, "process", "processes")}`}
+            {applying ? "Killing…" : one !== null && count === 1 ? "Kill process" : `Kill ${plural(count, "process", "processes")}`}
           </Button>
         )}
       </div>

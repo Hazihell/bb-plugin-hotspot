@@ -11,7 +11,7 @@ import { type FocusEvent, type ReactNode, useCallback, useEffect, useLayoutEffec
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
-import type { Episode, KillPlanView, Overview, Status, rpcContract } from "../lib/contract";
+import type { Episode, KillPlanView, KillResultView, Overview, Status, rpcContract } from "../lib/contract";
 import {
   type FooterHeat,
   type FooterLine,
@@ -387,6 +387,8 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
   const { overview, refetch } = useOverview();
   const [plan, setPlan] = useState<KillPlanView | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // Drill-down rows this popover killed, by process key, and how they ended.
+  const [ended, setEnded] = useState<ReadonlyMap<string, EndedAs>>(new Map());
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showIdle, setShowIdle] = useState(false);
   const { status } = state;
@@ -402,16 +404,19 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
   const listRef = useNoShrink(idleHidden);
   const { open: openMonitor, busy: monitorBusy, error: monitorError } = useOpenMonitor();
 
-  const planKill = (threadId: string) => {
-    setBusy(`kill:${threadId}`);
+  /** With `key`, one process of the thread (a drill-down row) and the targets it started. */
+  const planKill = (threadId: string, key?: string) => {
+    setBusy(`kill:${key ?? threadId}`);
     rpc
-      .call("killPlan", { threadId })
+      .call("killPlan", key === undefined ? { threadId } : { threadId, process: key })
       .then(
         (next) => {
-          // The confirmation replaces the list: let it go, and fold the row
-          // away so it does not hold the list frozen on return.
+          // The confirmation covers the list: let it go. A thread's kill
+          // folds its row away so it does not hold the list frozen on
+          // return; one process's kill keeps the row open, so the user
+          // comes back to the same drill-down with that row marked.
           hold.release();
-          setExpanded(null);
+          if (key === undefined) setExpanded(null);
           setPlan(next);
         },
         (error: unknown) => toast.error("Could not plan the kill", { description: errorText(error) }),
@@ -443,17 +448,17 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
     refetch();
   }, [shownIds, refetch]);
 
-  if (plan !== null) {
-    return (
+  const confirm =
+    plan === null ? null : (
       <KillConfirm
         plan={plan}
-        onDone={() => {
+        onDone={(result) => {
           hold.release();
           setPlan(null);
+          if (result !== null) setEnded((current) => endedAfter(current, plan, result));
         }}
       />
     );
-  }
 
   const threads = showIdle ? [...busyThreads, ...idleThreads] : busyThreads;
   const cpuThreshold = status?.cpuThreshold ?? 80;
@@ -463,162 +468,170 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
   // Only the thread list scrolls: the verdict and numbers above it and the
   // hot spells below stay in view however many threads there are. The
   // phone drawer allows 92dvh, less its handle.
+  // The confirmation covers the list without unmounting it, so an unfolded
+  // drill-down keeps its fixed rows for the user's return.
   return (
-    <div className="flex max-h-[min(40rem,80dvh)] flex-col text-sm max-md:max-h-[calc(92dvh-3rem)]">
-      <div className="shrink-0 space-y-3 p-4 pb-3">
-        {state.error !== null && status === null ? (
-          <ErrorNote title="Can't read Hotspot right now" detail={state.error} onRetry={state.retry} />
-        ) : (
-          <>
-            <VerdictBlock status={status} size="sheet" onNavigate={close} />
-            <MetricsRow status={status} size="sheet" />
-          </>
-        )}
-      </div>
+    <>
+      {confirm}
+      <div
+        className={cn("flex max-h-[min(40rem,80dvh)] flex-col text-sm max-md:max-h-[calc(92dvh-3rem)]", plan !== null && "hidden")}
+      >
+        <div className="shrink-0 space-y-3 p-4 pb-3">
+          {state.error !== null && status === null ? (
+            <ErrorNote title="Can't read Hotspot right now" detail={state.error} onRetry={state.retry} />
+          ) : (
+            <>
+              <VerdictBlock status={status} size="sheet" onNavigate={close} />
+              <MetricsRow status={status} size="sheet" />
+            </>
+          )}
+        </div>
 
-      {latest === null ? null : (
-        <section {...hold.handlers} className="flex min-h-0 flex-1 flex-col border-t border-border pt-3 pb-1.5">
-          {/*
-            The header row carries BB's total in the rows' own CPU and
-            memory columns, so the total costs no height; the rows below
-            read as parts of it.
-          */}
-          <div className="flex shrink-0 items-baseline gap-3 px-4 text-xs font-medium text-muted-foreground">
-            <h3 className="min-w-0 flex-1 truncate">Busiest threads</h3>
-            {latest.bb == null ? (
-              threads.length === 0 ? null : (
-                <>
-                  <span className={CPU_COLUMN}>CPU</span>
-                  <span className={MEM_COLUMN}>Memory</span>
-                  <span aria-hidden="true" className={ACTIONS_COLUMN} />
-                </>
-              )
-            ) : (
-              <BbTotal bb={latest.bb} />
-            )}
-          </div>
-          <div className="min-h-0 overflow-y-auto px-4 pt-1">
+        {latest === null ? null : (
+          <section {...hold.handlers} className="flex min-h-0 flex-1 flex-col border-t border-border pt-3 pb-1.5">
             {/*
-              The popover hangs from the footer, so any change in its height
-              moves everything above the change. The list keeps room for
-              three lines and the outside-BB line, and never shrinks while
-              open, except when the user hides the idle threads.
+              The header row carries BB's total in the rows' own CPU and
+              memory columns, so the total costs no height; the rows below
+              read as parts of it.
             */}
-            <div ref={listRef} className={LIST_FLOOR}>
-              {threadCount === 0 ? (
-                <Empty>No BB thread is using the CPU.</Empty>
+            <div className="flex shrink-0 items-baseline gap-3 px-4 text-xs font-medium text-muted-foreground">
+              <h3 className="min-w-0 flex-1 truncate">Busiest threads</h3>
+              {latest.bb == null ? (
+                threads.length === 0 ? null : (
+                  <>
+                    <span className={CPU_COLUMN}>CPU</span>
+                    <span className={MEM_COLUMN}>Memory</span>
+                    <span aria-hidden="true" className={ACTIONS_COLUMN} />
+                  </>
+                )
               ) : (
-                <ul>
-                  {threads.map(({ thread, present }) => (
-                    <ThreadRow
-                      key={thread.threadId}
-                      thread={thread}
-                      present={present}
-                      running={overview === null ? null : overview.running[thread.threadId] === true}
-                      hot={present && thread.cpu >= cpuThreshold}
-                      expanded={expanded === thread.threadId}
-                      onToggle={() => setExpanded((current) => (current === thread.threadId ? null : thread.threadId))}
-                      onOpen={() => {
-                        close();
-                        navigate.toThread(thread.threadId);
-                      }}
-                      busy={busy}
-                      allowKill={overview?.allowKill === true}
-                      onStop={stopTurn}
-                      onKill={planKill}
-                    />
-                  ))}
-                </ul>
+                <BbTotal bb={latest.bb} />
               )}
-              {idleThreads.length === 0 ? null : (
-                <button
-                  type="button"
-                  aria-expanded={showIdle}
-                  onClick={() => {
-                    // An unfolded idle row folds away with the others.
-                    if (showIdle && idleThreads.some((row) => row.thread.threadId === expanded)) setExpanded(null);
-                    if (showIdle) setIdleHidden((count) => count + 1);
-                    setShowIdle(!showIdle);
-                  }}
-                  className={cn(
-                    "-mx-2 flex h-8 w-[calc(100%+1rem)] items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted-foreground outline-none hover:bg-state-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring",
-                    TOUCH,
-                  )}
-                >
-                  <Icon name="ChevronRight" className={cn("size-3.5 transition-transform", showIdle && "rotate-90")} />
-                  {showIdle
-                    ? `Hide ${idleThreads.length === 1 ? "the idle thread" : "idle threads"}`
-                    : `${idleThreads.length} idle thread${idleThreads.length === 1 ? "" : "s"}`}
-                </button>
-              )}
+            </div>
+            <div className="min-h-0 overflow-y-auto px-4 pt-1">
               {/*
-                Its line is kept when nothing outside BB is busy, so the list
-                does not grow when something is. The monitor button and its
-                failure share the line, so neither adds height.
+                The popover hangs from the footer, so any change in its height
+                moves everything above the change. The list keeps room for
+                three lines and the outside-BB line, and never shrinks while
+                open, except when the user hides the idle threads.
               */}
-              <div className="flex items-center gap-2 py-1 text-xs">
-                {monitorError !== null ? (
-                  <p role="alert" title={monitorError} className="min-w-0 flex-1 truncate text-destructive">
-                    {monitorError}
-                  </p>
-                ) : others.length === 0 ? (
-                  <p aria-hidden="true" className="min-w-0 flex-1">
-                    &nbsp;
-                  </p>
+              <div ref={listRef} className={LIST_FLOOR}>
+                {threadCount === 0 ? (
+                  <Empty>No BB thread is using the CPU.</Empty>
                 ) : (
-                  <p className="min-w-0 flex-1 truncate tabular-nums text-muted-foreground">
-                    Also busy outside BB: {others.map((proc) => `${proc.name} ${pct(proc.cpu)}`).join(" · ")}
-                  </p>
+                  <ul>
+                    {threads.map(({ thread, present }) => (
+                      <ThreadRow
+                        key={thread.threadId}
+                        thread={thread}
+                        present={present}
+                        running={overview === null ? null : overview.running[thread.threadId] === true}
+                        hot={present && thread.cpu >= cpuThreshold}
+                        expanded={expanded === thread.threadId}
+                        onToggle={() => setExpanded((current) => (current === thread.threadId ? null : thread.threadId))}
+                        onOpen={() => {
+                          close();
+                          navigate.toThread(thread.threadId);
+                        }}
+                        busy={busy}
+                        allowKill={overview?.allowKill === true}
+                        onStop={stopTurn}
+                        onKill={planKill}
+                        ended={ended}
+                      />
+                    ))}
+                  </ul>
                 )}
-                {status?.monitor == null ? null : (
-                  <MonitorButton monitor={status.monitor} onOpen={openMonitor} busy={monitorBusy} className="-my-1 -mr-1 px-1 py-1" />
+                {idleThreads.length === 0 ? null : (
+                  <button
+                    type="button"
+                    aria-expanded={showIdle}
+                    onClick={() => {
+                      // An unfolded idle row folds away with the others.
+                      if (showIdle && idleThreads.some((row) => row.thread.threadId === expanded)) setExpanded(null);
+                      if (showIdle) setIdleHidden((count) => count + 1);
+                      setShowIdle(!showIdle);
+                    }}
+                    className={cn(
+                      "-mx-2 flex h-8 w-[calc(100%+1rem)] items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted-foreground outline-none hover:bg-state-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring",
+                      TOUCH,
+                    )}
+                  >
+                    <Icon name="ChevronRight" className={cn("size-3.5 transition-transform", showIdle && "rotate-90")} />
+                    {showIdle
+                      ? `Hide ${idleThreads.length === 1 ? "the idle thread" : "idle threads"}`
+                      : `${idleThreads.length} idle thread${idleThreads.length === 1 ? "" : "s"}`}
+                  </button>
                 )}
+                {/*
+                  Its line is kept when nothing outside BB is busy, so the list
+                  does not grow when something is. The monitor button and its
+                  failure share the line, so neither adds height.
+                */}
+                <div className="flex items-center gap-2 py-1 text-xs">
+                  {monitorError !== null ? (
+                    <p role="alert" title={monitorError} className="min-w-0 flex-1 truncate text-destructive">
+                      {monitorError}
+                    </p>
+                  ) : others.length === 0 ? (
+                    <p aria-hidden="true" className="min-w-0 flex-1">
+                      &nbsp;
+                    </p>
+                  ) : (
+                    <p className="min-w-0 flex-1 truncate tabular-nums text-muted-foreground">
+                      Also busy outside BB: {others.map((proc) => `${proc.name} ${pct(proc.cpu)}`).join(" · ")}
+                    </p>
+                  )}
+                  {status?.monitor == null ? null : (
+                    <MonitorButton monitor={status.monitor} onOpen={openMonitor} busy={monitorBusy} className="-my-1 -mr-1 px-1 py-1" />
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        </section>
-      )}
-
-      <Section
-        title="Recent hot spells"
-        columns={
-          <button
-            type="button"
-            onClick={() => {
-              close();
-              navigate.toPluginPanel("hotspot");
-            }}
-            className="-my-1 -mr-1 flex shrink-0 items-center gap-0.5 rounded-md px-1 py-1 font-normal text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring max-md:pointer-coarse:min-h-11"
-          >
-            Full history
-            <Icon name="ChevronRight" className="size-3.5" />
-          </button>
-        }
-      >
-        {overview === null ? (
-          <div className={cn("space-y-2 py-2", EPISODES_FLOOR)}>
-            <SkeletonLine className="w-3/4" />
-            <SkeletonLine className="w-2/3" />
-          </div>
-        ) : overview.episodes.length === 0 ? (
-          <Empty>None recorded. Hotspot will tell you when your Mac starts running hot.</Empty>
-        ) : (
-          // Room for three spells, so a new one does not grow the popover.
-          <ul className={cn("-mx-2 pt-1", EPISODES_FLOOR)}>
-            {overview.episodes.slice(0, 3).map((episode) => (
-              <EpisodeRow
-                key={episode.id}
-                episode={episode}
-                onOpen={() => {
-                  close();
-                  navigate.toPluginPanel("hotspot", { subPath: `episode/${episode.id}` });
-                }}
-              />
-            ))}
-          </ul>
+          </section>
         )}
-      </Section>
-    </div>
+
+        <Section
+          title="Recent hot spells"
+          columns={
+            <button
+              type="button"
+              onClick={() => {
+                close();
+                navigate.toPluginPanel("hotspot");
+              }}
+              className="-my-1 -mr-1 flex shrink-0 items-center gap-0.5 rounded-md px-1 py-1 font-normal text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring max-md:pointer-coarse:min-h-11"
+            >
+              Full history
+              <Icon name="ChevronRight" className="size-3.5" />
+            </button>
+          }
+        >
+          {overview === null ? (
+            <div className={cn("space-y-2 py-2", EPISODES_FLOOR)}>
+              <SkeletonLine className="w-3/4" />
+              <SkeletonLine className="w-2/3" />
+            </div>
+          ) : overview.episodes.length === 0 ? (
+            <Empty>None recorded. Hotspot will tell you when your Mac starts running hot.</Empty>
+          ) : (
+            // Room for three spells, so a new one does not grow the popover.
+            <ul className={cn("-mx-2 pt-1", EPISODES_FLOOR)}>
+              {overview.episodes.slice(0, 3).map((episode) => (
+                <EpisodeRow
+                  key={episode.id}
+                  episode={episode}
+                  onOpen={() => {
+                    close();
+                    navigate.toPluginPanel("hotspot", { subPath: `episode/${episode.id}` });
+                  }}
+                />
+              ))}
+            </ul>
+          )}
+        </Section>
+      </div>
+    </>
   );
 }
 
@@ -661,6 +674,7 @@ function ThreadRow({
   allowKill,
   onStop,
   onKill,
+  ended,
 }: {
   thread: ThreadEntry;
   /** False when the latest reading left this thread out: CPU is unknown, memory is the last seen. */
@@ -674,7 +688,9 @@ function ThreadRow({
   busy: string | null;
   allowKill: boolean;
   onStop: (threadId: string, title: string) => void;
-  onKill: (threadId: string) => void;
+  /** The thread's work, or with `key` one of its processes. */
+  onKill: (threadId: string, key?: string) => void;
+  ended: ReadonlyMap<string, EndedAs>;
 }) {
   const title = thread.title ?? thread.threadId;
   const meta = threadMeta(thread.processes, running);
@@ -724,7 +740,16 @@ function ThreadRow({
           <Icon name="MoreHorizontal" className="size-4" />
         </button>
       </div>
-      {expanded ? <ProcessList thread={thread} present={present} /> : null}
+      {expanded ? (
+        <ProcessList
+          thread={thread}
+          present={present}
+          allowKill={allowKill}
+          busy={busy}
+          ended={ended}
+          onKill={(key) => onKill(thread.threadId, key)}
+        />
+      ) : null}
       {expanded ? (
         <div id={panelId} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-2 pb-2">
           <p id={metaId} className="min-w-0 basis-full truncate text-xs text-muted-foreground sm:basis-0 sm:flex-1">
@@ -761,14 +786,49 @@ function ThreadRow({
 
 type ThreadProcess = NonNullable<ThreadEntry["top"]>[number];
 
+/** How a drill-down row the user killed ended: signalled, or already gone. */
+type EndedAs = "killed" | "gone";
+
+/** `current` plus the processes a kill plan's result ended, by key. */
+function endedAfter(current: ReadonlyMap<string, EndedAs>, plan: KillPlanView, result: KillResultView): ReadonlyMap<string, EndedAs> {
+  const next = new Map(current);
+  const keys = new Map(plan.targets.map((target) => [target.pid, target.key] as const));
+  for (const outcome of result.outcomes) {
+    const key = keys.get(outcome.pid);
+    if (key === undefined) continue;
+    if (outcome.result === "terminated" || outcome.result === "killed") next.set(key, "killed");
+    if (outcome.result === "gone") next.set(key, "gone");
+  }
+  return next;
+}
+
 /**
  * An unfolded row's busiest processes, in the list's CPU and memory
- * columns. Display only: kill still plans from the whole thread. Like the
- * list around it, it holds still while unfolded: the processes and their
- * order are the first ones seen after unfolding, and only the numbers change. One that
- * leaves the reading keeps its row with CPU "—" and its last memory.
+ * columns. Like the list around it, it holds still while unfolded: the
+ * processes and their order are the first ones seen after unfolding, and
+ * only the numbers change. One that leaves the reading keeps its row with
+ * CPU "—" and its last memory; one the user killed from here says so.
+ *
+ * A row the thread's kill would target (asked once, on unfolding) has its
+ * own kill action in the actions column; the server narrows the thread's
+ * plan to it, so nothing the thread's kill spares can be offered or hit.
  */
-function ProcessList({ thread, present }: { thread: ThreadEntry; present: boolean }) {
+function ProcessList({
+  thread,
+  present,
+  allowKill,
+  busy,
+  ended,
+  onKill,
+}: {
+  thread: ThreadEntry;
+  present: boolean;
+  allowKill: boolean;
+  busy: string | null;
+  ended: ReadonlyMap<string, EndedAs>;
+  onKill: (key: string) => void;
+}) {
+  const rpc = useRpc<typeof rpcContract>();
   const top = thread.top ?? [];
   // Fixed on the first render that has processes: a reading from before a
   // reload, or a stored sample, carries none.
@@ -777,25 +837,64 @@ function ProcessList({ thread, present }: { thread: ThreadEntry; present: boolea
   const lastSeen = useRef(new Map<number, ThreadProcess>());
   for (const proc of top) lastSeen.current.set(proc.pid, proc);
   const inReading = new Set(present ? top.map((proc) => proc.pid) : []);
+  const [killable, setKillable] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    if (!allowKill) return;
+    let live = true;
+    rpc.call("killTargets", { threadId: thread.threadId }).then(
+      ({ keys }) => {
+        if (live) setKillable(new Set(keys));
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [rpc, allowKill, thread.threadId]);
   if (pids === null) return null;
   return (
     <ul aria-label={`Busiest processes in ${thread.title ?? thread.threadId}`} className="pb-1">
       {pids.map((pid) => {
         const proc = lastSeen.current.get(pid);
         if (proc === undefined) return null;
-        const live = inReading.has(pid);
+        const end = proc.key === null ? undefined : ended.get(proc.key);
+        const live = inReading.has(pid) && end === undefined;
+        const key = allowKill && end === undefined && proc.key !== null && killable.has(proc.key) ? proc.key : null;
+        const state = end === "killed" ? "\nKilled" : end === "gone" ? "\nHad already exited" : live ? "" : "\nNot in the latest reading";
         return (
           <li
             key={pid}
-            title={`${proc.name} (pid ${pid})${live ? "" : "\nNot in the latest reading"}`}
-            className="flex h-6 items-center gap-3 pl-2 text-xs tabular-nums"
+            title={`${proc.name} (pid ${pid})${state}`}
+            // Under a finger the kill action needs 44px; every row keeps that
+            // height whether or not it has the action, so none shifts.
+            className={cn("flex h-6 items-center gap-3 pl-2 text-xs tabular-nums", allowKill && TOUCH)}
           >
-            <span className="min-w-0 flex-1 truncate pl-3 text-muted-foreground">{proc.name}</span>
+            <span className={cn("min-w-0 flex-1 truncate pl-3 text-muted-foreground", end !== undefined && "line-through")}>
+              {proc.name}
+            </span>
             <span className={cn(CPU_COLUMN, live ? "text-foreground" : "text-muted-foreground")}>
-              {live ? cpuText(proc.cpu) : "—"}
+              {end ?? (live ? cpuText(proc.cpu) : "—")}
             </span>
             <span className={cn(MEM_COLUMN, "text-muted-foreground")}>{bytesText(proc.memBytes)}</span>
-            <span aria-hidden="true" className={ACTIONS_COLUMN} />
+            {key === null ? (
+              <span aria-hidden="true" className={ACTIONS_COLUMN} />
+            ) : (
+              <button
+                type="button"
+                onClick={() => onKill(key)}
+                disabled={busy !== null}
+                aria-label={`Kill ${proc.name}…`}
+                title={`Kill ${proc.name}…`}
+                className={cn(
+                  ACTIONS_COLUMN,
+                  "grid h-6 place-items-center rounded-md text-muted-foreground outline-none hover:bg-state-hover hover:text-destructive focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50",
+                  busy === `kill:${key}` && "animate-pulse",
+                  TOUCH,
+                )}
+              >
+                <Icon name="X" className="size-3.5" />
+              </button>
+            )}
           </li>
         );
       })}
