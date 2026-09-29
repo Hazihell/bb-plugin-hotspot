@@ -538,6 +538,7 @@ function HotspotPopover({ state, close }: { state: StatusState; close: () => voi
                         onStop={stopTurn}
                         onKill={planKill}
                         ended={ended}
+                        confirming={plan !== null}
                       />
                     ))}
                   </ul>
@@ -675,6 +676,7 @@ function ThreadRow({
   onStop,
   onKill,
   ended,
+  confirming,
 }: {
   thread: ThreadEntry;
   /** False when the latest reading left this thread out: CPU is unknown, memory is the last seen. */
@@ -691,6 +693,8 @@ function ThreadRow({
   /** The thread's work, or with `key` one of its processes. */
   onKill: (threadId: string, key?: string) => void;
   ended: ReadonlyMap<string, EndedAs>;
+  /** A kill confirmation covers the list. */
+  confirming: boolean;
 }) {
   const title = thread.title ?? thread.threadId;
   const meta = threadMeta(thread.processes, running);
@@ -747,6 +751,7 @@ function ThreadRow({
           allowKill={allowKill}
           busy={busy}
           ended={ended}
+          confirming={confirming}
           onKill={(key) => onKill(thread.threadId, key)}
         />
       ) : null}
@@ -771,6 +776,7 @@ function ThreadRow({
                 size="sm"
                 variant="ghost"
                 className={cn("h-7 px-2 text-muted-foreground hover:text-destructive", TOUCH)}
+                data-kill-thread={thread.threadId}
                 disabled={busy !== null}
                 onClick={() => onKill(thread.threadId)}
               >
@@ -795,7 +801,7 @@ function endedAfter(current: ReadonlyMap<string, EndedAs>, plan: KillPlanView, r
   const keys = new Map(plan.targets.map((target) => [target.pid, target.key] as const));
   for (const outcome of result.outcomes) {
     const key = keys.get(outcome.pid);
-    if (key === undefined) continue;
+    if (key == null) continue;
     if (outcome.result === "terminated" || outcome.result === "killed") next.set(key, "killed");
     if (outcome.result === "gone") next.set(key, "gone");
   }
@@ -809,9 +815,12 @@ function endedAfter(current: ReadonlyMap<string, EndedAs>, plan: KillPlanView, r
  * only the numbers change. One that leaves the reading keeps its row with
  * CPU "—" and its last memory; one the user killed from here says so.
  *
- * A row the thread's kill would target (asked once, on unfolding) has its
- * own kill action in the actions column; the server narrows the thread's
- * plan to it, so nothing the thread's kill spares can be offered or hit.
+ * A row the thread's kill would target has its own kill action in the
+ * actions column; the server narrows the thread's plan to it, so nothing the
+ * thread's kill spares can be offered or hit. Which rows those are is asked
+ * on unfolding and again when a confirmation opened here closes, never on
+ * the live readings. Focus then goes back to the action that opened it, or,
+ * when that row has none any more, to the row's Kill processes… or "…".
  */
 function ProcessList({
   thread,
@@ -819,6 +828,7 @@ function ProcessList({
   allowKill,
   busy,
   ended,
+  confirming,
   onKill,
 }: {
   thread: ThreadEntry;
@@ -826,6 +836,7 @@ function ProcessList({
   allowKill: boolean;
   busy: string | null;
   ended: ReadonlyMap<string, EndedAs>;
+  confirming: boolean;
   onKill: (key: string) => void;
 }) {
   const rpc = useRpc<typeof rpcContract>();
@@ -838,22 +849,57 @@ function ProcessList({
   for (const proc of top) lastSeen.current.set(proc.pid, proc);
   const inReading = new Set(present ? top.map((proc) => proc.pid) : []);
   const [killable, setKillable] = useState<ReadonlySet<string>>(new Set());
+  // Bumped when a confirmation opened here closes; `asked` is the last one answered.
+  const [ask, setAsk] = useState(0);
+  const [asked, setAsked] = useState(-1);
   useEffect(() => {
     if (!allowKill) return;
     let live = true;
+    const settle = (keys: ReadonlySet<string> | null) => {
+      if (!live) return;
+      if (keys !== null) setKillable(keys);
+      setAsked(ask);
+    };
     rpc.call("killTargets", { threadId: thread.threadId }).then(
-      ({ keys }) => {
-        if (live) setKillable(new Set(keys));
-      },
-      () => undefined,
+      ({ keys }) => settle(new Set(keys)),
+      () => settle(null),
     );
     return () => {
       live = false;
     };
-  }, [rpc, allowKill, thread.threadId]);
+  }, [rpc, allowKill, thread.threadId, ask]);
+
+  const list = useRef<HTMLUListElement>(null);
+  // The key of the action whose confirmation is open.
+  const opened = useRef<string | null>(null);
+  const returnFocus = useCallback(() => {
+    const key = opened.current;
+    const row = list.current?.closest("li");
+    if (key === null || row == null) return;
+    const target =
+      list.current?.querySelector<HTMLElement>(`[data-kill-key="${CSS.escape(key)}"]:not(:disabled)`) ??
+      row.querySelector<HTMLElement>("[data-kill-thread]:not(:disabled)") ??
+      row.querySelector<HTMLElement>("button[aria-controls]");
+    target?.focus();
+  }, []);
+  const wasConfirming = useRef(confirming);
+  useEffect(() => {
+    if (wasConfirming.current && !confirming && opened.current !== null) {
+      returnFocus();
+      setAsk((count) => count + 1);
+    }
+    wasConfirming.current = confirming;
+  }, [confirming, returnFocus]);
+  // The fresh answer may take the focused action away: move on if it did.
+  useEffect(() => {
+    if (asked !== ask || opened.current === null) return;
+    if (!list.current?.closest("li")?.contains(document.activeElement)) returnFocus();
+    opened.current = null;
+  }, [asked, ask, returnFocus]);
+
   if (pids === null) return null;
   return (
-    <ul aria-label={`Busiest processes in ${thread.title ?? thread.threadId}`} className="pb-1">
+    <ul ref={list} aria-label={`Busiest processes in ${thread.title ?? thread.threadId}`} className="pb-1">
       {pids.map((pid) => {
         const proc = lastSeen.current.get(pid);
         if (proc === undefined) return null;
@@ -881,10 +927,14 @@ function ProcessList({
             ) : (
               <button
                 type="button"
-                onClick={() => onKill(key)}
+                onClick={() => {
+                  opened.current = key;
+                  onKill(key);
+                }}
                 disabled={busy !== null}
-                aria-label={`Kill ${proc.name}…`}
-                title={`Kill ${proc.name}…`}
+                data-kill-key={key}
+                aria-label={`Kill ${proc.name} (pid ${pid})…`}
+                title={`Kill ${proc.name} (pid ${pid})…`}
                 className={cn(
                   ACTIONS_COLUMN,
                   "grid h-6 place-items-center rounded-md text-muted-foreground outline-none hover:bg-state-hover hover:text-destructive focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50",
