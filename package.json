@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Records when the Mac runs hot and which BB thread caused it.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hazihell/bb-plugin-hotspot.git"
+  },
   "type": "module",
   "scripts": {
     "test": "node --experimental-strip-types --no-warnings --import ./test/loader.mjs --test test/*.test.mjs",
