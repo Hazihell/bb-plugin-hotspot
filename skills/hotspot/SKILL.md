@@ -45,7 +45,7 @@ BB renders a link.
 ```
 bb hotspot status [--json]
 bb hotspot episodes [--since 24h] [--until <time>] [--limit 10] [--json]
-bb hotspot kill <threadId> [--yes] [--json]
+bb hotspot kill <threadId> [--pid <pid>] [--yes] [--json]
 ```
 
 `status` takes a fresh reading (or reuses one under 5 seconds old), so its
@@ -62,7 +62,10 @@ keeps the top five culprits per episode.
 `kill` prints which of a thread's processes would get SIGTERM and which are
 spared, with the reason; nothing is signalled without `--yes`. With `--yes`
 it applies that plan: SIGTERM, then SIGKILL after 5 seconds for survivors
-that are still the same process. `--yes` is refused unless a person typed
+that are still the same process. With `--pid`, the plan is cut down to that
+process and the targets it started (a dev server takes its workers); a pid
+the thread's plan spares, another thread's pid, or one no longer running
+plans nothing and says why. `--yes` is refused unless a person typed
 the command in a terminal: the calling `bb` process must have a
 controlling terminal and no provider bridge above it. That stops an agent
 applying a kill by accident; it does not stop a determined one, which could
@@ -126,7 +129,9 @@ app's own processes plus every thread's; memory is summed RSS, so shared
 pages count more than once) and the five
 busiest threads with CPU and memory, one line each (the title opens the
 thread; "…" unfolds its five busiest processes, Stop turn and Kill
-processes…; threads under 1% CPU and
+processes…; a process the kill would target has its own × to kill just it
+and what it started, after the same confirmation, and its row then reads
+"killed"; threads under 1% CPU and
 1 GB fold into "N idle threads"), other
 busy processes with an Activity Monitor button (opens the OS monitor on
 the server's machine; hidden on a phone; the user's button, not an agent
@@ -146,7 +151,7 @@ Set with `bb plugin config hotspot set <key> <value>`:
 | `retentionDays` | 7 | 1–30 |
 | `cpuThreshold` | 80 (% of all cores) | 10–100 |
 | `toast` | true | show a toast in BB when an episode opens |
-| `allowKill` | true | offer Kill processes; `false` hides the button and refuses `bb hotspot kill` |
+| `allowKill` | true | offer Kill processes and the drill-down's per-process kill; `false` hides both and refuses `bb hotspot kill` |
 
 ## Limits
 

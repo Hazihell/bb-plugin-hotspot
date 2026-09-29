@@ -681,7 +681,7 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
       summary: "When the Mac ran hot and which BB thread caused it",
       commands: {
         kill: cliCommand({
-          summary: "Plan (and with --yes, apply) killing a thread's work processes: dev servers, builds, test runners",
+          summary: "Plan (and with --yes, apply) killing a thread's work processes (dev servers, builds, test runners), or with --pid one of them",
           positionals: [{ name: "threadId", description: "The thread whose processes to stop (thr_…)", required: true }],
           options: {
             pid: {

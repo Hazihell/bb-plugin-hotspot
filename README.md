@@ -45,8 +45,12 @@ the app/threads split in its tooltip. Children of BB that no thread claims
 resident size, so pages shared between processes count more than once. Clicking a
 title opens the thread; its "…" button unfolds the thread's five busiest
 processes (name, CPU, memory, in the list's columns), the process count,
-Stop turn and Kill processes…. The process list is display only; its rows
-are fixed when you unfold and only their numbers update. Every process name Hotspot shows, stores
+Stop turn and Kill processes…. The process list's rows are fixed when you
+unfold and only their numbers update. A row the thread's kill would target
+has an × button (Kill <name>…) that kills just that process and whatever it
+started that the thread's kill would also target, after the same
+confirmation; the row then stays, struck through, with "killed" in the CPU
+column. Rows the kill spares (the agent, MCP servers, walls) have no button. Every process name Hotspot shows, stores
 or returns (here, "Also busy outside BB", hot spells, kill plans, the CLI and
 the agent tool) is built by allowlist in `lib/proc-name.ts`: the executable;
 the file an interpreter runs (by basename or package) when every flag before
@@ -97,7 +101,8 @@ settings and limits.
 Sampling only reads, and Hotspot talks to no network service. Besides
 opening Activity Monitor (`open -a "Activity Monitor"`, fixed arguments, no
 shell), the one thing that signals a process is **Kill processes** (popover, or
-`bb hotspot kill <threadId> --yes` typed by a person in a terminal). It
+`bb hotspot kill <threadId> --yes` typed by a person in a terminal), or the
+kill of one of its processes (the drill-down's ×, or `--pid <pid>`). It
 targets only the thread's own work: what the agent's shells started and
 detached processes carrying the thread's id (dev servers, builds, test
 runners, headless browsers). BB, apps (any `.app` bundle, and everything under an app a
@@ -108,7 +113,11 @@ chain (wrappers, relaunches) and its MCP servers are spared. The server
 mints a two-minute, single-use plan id; apply accepts only that id,
 re-reads the process table and refuses any pid whose start time or command
 changed before sending SIGTERM, then SIGKILL after 5 seconds to verified
-survivors. Agents get no tool for killing or stopping turns, and the CLI
+survivors. A one-process kill names the process by pid and start time; the
+server builds the thread's whole plan and keeps only that process and the
+targets below it, so it can only remove targets. If the process exited, its
+pid was reused, or the thread's plan spares it, the plan says so and targets
+nothing. Agents get no tool for killing or stopping turns, and the CLI
 refuses `--yes` without a terminal or from under a provider bridge. That
 guards against an agent applying a kill by accident, not against one set on
 signalling processes itself. Set `allowKill` to `false` to remove the action.
