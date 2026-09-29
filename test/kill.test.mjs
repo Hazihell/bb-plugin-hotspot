@@ -97,10 +97,10 @@ test("never selects the agent, BB, the calling shell, other users, system or app
 });
 
 test("an app launched from a thread is a wall: its terminals are never the thread's", () => {
-  // The live tree from the review: Orca was opened from thr_tabbvgxkey, so
+  // The live tree from the review: Orca was opened from thr_orcaopener, so
   // its helper carries the id and launchd adopted it; its terminals run
   // through login (root) into interactive zsh.
-  const orca = "thr_tabbvgxkey";
+  const orca = "thr_orcaopener";
   const helper = `/Applications/Orca.app/Contents/Frameworks/Orca Helper.app/Contents/MacOS/Orca Helper /Applications/Orca.app/Contents/Resources/app.asar`;
   const stdout = table({
     44304: line(44304, 1, `${helper} BB_THREAD_ID=${orca}`),

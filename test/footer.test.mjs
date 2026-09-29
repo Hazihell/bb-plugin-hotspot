@@ -4,7 +4,7 @@ import { fitFooter, footerLines, footerView, footerWidth, shortTitle } from "../
 
 const GB = 1024 ** 3;
 const threads = [
-  { threadId: "thr_home000001", title: "Home page Craft redesign", cpu: 41.6, memBytes: 1.24 * GB },
+  { threadId: "thr_home000001", title: "Home page Stack redesign", cpu: 41.6, memBytes: 1.24 * GB },
   { threadId: "thr_tests00001", title: null, cpu: 12.2, memBytes: null },
   { threadId: "thr_build00001", title: "Build", cpu: 3, memBytes: 300 * 1024 ** 2 },
   { threadId: "thr_quiet00001", title: "Quiet", cpu: 1 },
@@ -24,7 +24,7 @@ test("calm: labelled CPU and memory, no heat word, no title", () => {
   assert.equal(
     view.tooltip,
     "Hotspot: Thermal nominal · CPU 13% · Memory 62% (swap 5.7 GB, pressure normal) · load 0.42/core\n" +
-      "Top threads: Home page Craft redesign 42% CPU · 1.2 GB, thr_tests00001 12% CPU, Build 3% CPU · 300 MB",
+      "Top threads: Home page Stack redesign 42% CPU · 1.2 GB, thr_tests00001 12% CPU, Build 3% CPU · 300 MB",
   );
 });
 
@@ -33,7 +33,7 @@ test("hot: both metrics and the top thread's short title; the heat word only in 
   assert.equal(view.tone, "hot");
   assert.equal(view.heat, "Hot");
   assert.equal(view.cpu.alert, "hot");
-  assert.equal(footerLines(view)[0].text, "CPU 83% · MEM 62% · Home page Craft red…");
+  assert.equal(footerLines(view)[0].text, "CPU 83% · MEM 62% · Home page Stack red…");
   assert.match(view.tooltip, /^Hotspot: Hot \(hot episode\) · Thermal heavy · CPU 83% · Memory 62%/);
 });
 
@@ -41,7 +41,7 @@ test("the footer sheds the title, stacks the metrics, then sheds a metric, never
   const view = footerView({ latest: latest({ thermal: 2, cpu: 83.2 }), hot: true, cpuThreshold: 80 });
   const lines = footerLines(view);
   assert.deepEqual(lines.map(shape), [
-    "row: CPU 83% · MEM 62% · Home page Craft red…",
+    "row: CPU 83% · MEM 62% · Home page Stack red…",
     "row: CPU 83% · MEM 62%",
     "stack: CPU 83% · MEM 62%",
     "stack: CPU 83%",
@@ -76,7 +76,7 @@ test("the one-metric line keeps memory when memory is the problem", () => {
 test("moderate thermal says Warm; CPU over the threshold alone says Busy", () => {
   const warm = footerView({ latest: latest({ thermal: 1, cpu: 30 }), hot: false, cpuThreshold: 80 });
   assert.equal(warm.tone, "warm");
-  assert.equal(footerLines(warm)[0].text, "CPU 30% · MEM 62% · Home page Craft red…");
+  assert.equal(footerLines(warm)[0].text, "CPU 30% · MEM 62% · Home page Stack red…");
   assert.match(warm.tooltip, /^Hotspot: Warm · Thermal moderate/);
   const busy = footerView({ latest: latest({ cpu: 91 }), hot: false, cpuThreshold: 80 });
   assert.equal(busy.tone, "calm");

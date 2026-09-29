@@ -35,12 +35,12 @@ test("parseThreadId prefers BB_THREAD_ID from the environment", () => {
 
 test("parseThreadId falls back to a worktree or workspace path in argv", () => {
   assert.equal(
-    parseThreadId("node /Users/me/.bb/plugins/prepared-worktree/host-data/worktrees/thr_cyjs4d8nvp-1/ui/tsc --watch"),
-    "thr_cyjs4d8nvp",
+    parseThreadId("node /Users/me/.bb/plugins/prepared-worktree/host-data/worktrees/thr_worktree01-1/ui/tsc --watch"),
+    "thr_worktree01",
   );
   assert.equal(
-    parseThreadId("node /Users/me/.bb/plugins/env/host-data/workspaces/thr_7fryv3rwfg HOME=/Users/me"),
-    "thr_7fryv3rwfg",
+    parseThreadId("node /Users/me/.bb/plugins/env/host-data/workspaces/thr_workspace1 HOME=/Users/me"),
+    "thr_workspace1",
   );
   assert.equal(parseThreadId("node BB_THREAD_ID=thr_ HOME=/x"), null);
   assert.equal(parseThreadId("/sbin/launchd"), null);
