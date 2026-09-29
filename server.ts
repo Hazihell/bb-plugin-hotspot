@@ -38,7 +38,6 @@ import {
   checkInteractiveCaller,
   narrowPlan,
   planKill,
-  processKey,
   readKillRows,
 } from "./lib/kill";
 import { type MonitorRunner, findMonitor, openMonitor, systemMonitorRunner } from "./lib/monitor";
@@ -424,7 +423,7 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
     const whole = planKill(rows, threadId, context);
     const pidRow = select !== undefined && "pid" in select ? rows.find((row) => row.pid === select.pid) : undefined;
     const key =
-      select === undefined ? null : "key" in select ? select.key : pidRow === undefined ? `${select.pid}@` : processKey(pidRow);
+      select === undefined ? null : "key" in select ? select.key : (pidRow?.key ?? `${select.pid}@`);
     const plan = key === null ? whole : narrowPlan(whole, rows, key);
     const now = Date.now();
     for (const [id, entry] of plans) if (entry.expiresAt <= now) plans.delete(id);
@@ -442,7 +441,7 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
         name: target.name,
         cpu: machineShare(target.cpuPercent),
         command: displayCommand(target.argv),
-        key: processKey(target),
+        key: target.key,
       })),
       excluded: plan.excluded.map((entry) => ({
         pid: entry.pid,
@@ -459,7 +458,7 @@ export async function createHotspot(bb: BbPluginApi, deps: HotspotDeps = {}): Pr
     await requireKillAllowed();
     const rows = await killDeps.readRows();
     const plan = planKill(rows, threadId, planContext(rows));
-    return { keys: plan.targets.map(processKey) };
+    return { keys: plan.targets.flatMap((target) => (target.key === null ? [] : [target.key])) };
   }
 
   async function applyPlan(planId: string): Promise<KillResultView> {

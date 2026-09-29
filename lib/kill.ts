@@ -26,10 +26,23 @@
  * command a `bb` CLI call belongs to (`bb … | head`).
  */
 import { friendlyName } from "./proc-name";
-import { attributeThreads, isBbCommand, type ProcessRow, type ProcessSource, processName, splitEnvironment, threadIdFrom } from "./procs";
+import {
+  attributeThreads,
+  isBbCommand,
+  parseProcStat,
+  type ProcessRow,
+  type ProcessSource,
+  processName,
+  splitEnvironment,
+  threadIdFrom,
+} from "./procs";
 
-/** A `ps` row with what identity and ownership checks need; the kill `ps` reads no memory or CPU time. */
-export interface KillRow extends Omit<ProcessRow, "rssBytes" | "cpuMs" | "key" | "bb" | "argv"> {
+/**
+ * A `ps` row with what identity and ownership checks need; the kill `ps`
+ * reads no memory or CPU time. `key` is built as the sampler builds it
+ * (lib/procs.ts), so a drill-down row names the same process here.
+ */
+export interface KillRow extends Omit<ProcessRow, "rssBytes" | "cpuMs" | "bb" | "argv"> {
   uid: number;
   /** `ps` lstart in the C locale, e.g. `Mon Sep 28 14:04:23 2026`. */
   startedAt: string;
@@ -50,13 +63,15 @@ export function parseKillLine(line: string, environ?: string | null): KillRow | 
   const match = KILL_LINE.exec(line);
   if (match === null) return null;
   const { argv, env } = environ === undefined ? splitEnvironment(match[7]) : { argv: match[7], env: environ ?? "" };
+  const startedAt = match[6].replace(/\s+/g, " ");
   return {
     pid: Number(match[1]),
     ppid: Number(match[2]),
     uid: Number(match[3]),
     tty: /^[?-]+$/.test(match[4]) ? null : match[4],
     cpuPercent: Number(match[5]),
-    startedAt: match[6].replace(/\s+/g, " "),
+    startedAt,
+    key: `${match[1]}@${startedAt}`,
     argv: argv.trim(),
     name: processName(argv),
     label: friendlyName(argv),
@@ -64,7 +79,10 @@ export function parseKillLine(line: string, environ?: string | null): KillRow | 
   };
 }
 
-/** Read the table the planner needs. Throws when `ps` fails. */
+/**
+ * Read the table the planner needs. Throws when `ps` fails. Off macOS the
+ * key takes the start time from `/proc/<pid>/stat`, as the sampler's does.
+ */
 export async function readKillRows(source: ProcessSource): Promise<KillRow[]> {
   if (source.platform === "darwin") {
     const stdout = await source.exec(DARWIN_KILL_PS);
@@ -75,7 +93,11 @@ export async function readKillRows(source: ProcessSource): Promise<KillRow[]> {
     stdout.split("\n").map(async (line) => {
       const pid = /^\s*(\d+)\s/.exec(line)?.[1];
       if (pid === undefined) return null;
-      return parseKillLine(line, await source.readEnviron(Number(pid)));
+      const [environ, stat] = await Promise.all([source.readEnviron(Number(pid)), source.readStat?.(Number(pid)) ?? null]);
+      const row = parseKillLine(line, environ);
+      if (row === null) return null;
+      const times = parseProcStat(stat);
+      return { ...row, key: times === null ? null : `${pid}@${times.started}` };
     }),
   );
   return rows.filter((row): row is KillRow => row !== null);
@@ -117,6 +139,8 @@ export interface KillTarget {
   /** Identity for re-validation only; never shown (see displayCommand). */
   argv: string;
   startedAt: string;
+  /** What the drill-down names the process by (KillRow.key); null when unknown. */
+  key: string | null;
   cpuPercent: number;
 }
 
@@ -146,14 +170,6 @@ export interface KillPlan {
   selected: KillSelection | null;
 }
 
-/**
- * A process's identity across readings: its pid and `ps` start time, so a
- * reused pid is a different process. The drill-down's rows carry the same
- * key (lib/procs.ts), so the popover can name the process to kill with it.
- */
-export function processKey(row: Pick<KillRow, "pid" | "startedAt">): string {
-  return `${row.pid}@${row.startedAt}`;
-}
 
 const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"]);
 
@@ -360,6 +376,7 @@ export function planKill(rows: readonly KillRow[], threadId: string, context: Pl
       name: row.label,
       argv: row.argv,
       startedAt: row.startedAt,
+      key: row.key,
       cpuPercent: row.cpuPercent,
     }));
   const excluded = [
@@ -381,7 +398,7 @@ export function planKill(rows: readonly KillRow[], threadId: string, context: Pl
  */
 export function narrowPlan(plan: KillPlan, rows: readonly KillRow[], key: string): KillPlan {
   const pid = Number(/^(\d+)@/.exec(key)?.[1] ?? -1);
-  const row = rows.find((candidate) => processKey(candidate) === key);
+  const row = rows.find((candidate) => candidate.key === key);
   const nothing = (name: string | null, reason: string, excluded: KillExclusion[] = []): KillPlan => ({
     threadId: plan.threadId,
     targets: [],
@@ -390,10 +407,12 @@ export function narrowPlan(plan: KillPlan, rows: readonly KillRow[], key: string
   });
   // Each reason reads after "<name> is".
   if (row === undefined) {
-    const reused = rows.some((candidate) => candidate.pid === pid);
-    return nothing(null, reused ? "no longer running (its pid now belongs to another process)" : "no longer running");
+    const atPid = rows.find((candidate) => candidate.pid === pid);
+    if (atPid === undefined) return nothing(null, "no longer running");
+    if (atPid.key === null) return nothing(null, "not identifiable (its start time could not be read)");
+    return nothing(null, "no longer running (its pid now belongs to another process)");
   }
-  if (!plan.targets.some((target) => processKey(target) === key)) {
+  if (!plan.targets.some((target) => target.key === key)) {
     const spared = plan.excluded.find((entry) => entry.pid === row.pid);
     return spared === undefined
       ? nothing(row.label, "not one of this thread's processes")

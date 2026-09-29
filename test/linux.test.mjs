@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DARWIN_PS, PORTABLE_PS, attributeThreads, groupByThread, readProcesses } from "../lib/procs.ts";
 import { createSampler } from "../lib/sample.ts";
+import { readKillRows } from "../lib/kill.ts";
 
 const LINUX_PS = [
   "    1     0  0.0  1000 /sbin/init",
@@ -102,6 +103,15 @@ test("a Linux sample ranks threads found through /proc", async () => {
   assert.deepEqual(sample.threads.map((entry) => entry.memBytes), [2 * 1000 * 1024, 1000 * 1024]);
   assert.deepEqual(sample.threads.map((entry) => entry.threadId), ["thr_aaaaaaaaaa", "thr_bbbbbbbbbb"]);
   assert.deepEqual(sample.procs.map((entry) => entry.pid), [500]);
+});
+
+test("on Linux the drill-down's process key and the kill table's are the same", async () => {
+  const drill = await readProcesses(linuxSource().source);
+  // The kill `ps` prints uid, tty and lstart too; the key must not come from lstart.
+  const killPs = "  200     1  1000 ?        12.5 Mon Sep 28 14:04:23 2026 /usr/bin/node /home/me/.local/bin/claude --verbose";
+  const kill = await readKillRows({ ...linuxSource().source, exec: async () => killPs });
+  assert.equal(drill.find((row) => row.pid === 200).key, "200@4242");
+  assert.equal(kill[0].key, "200@4242");
 });
 
 test("a Linux source without /proc stat still samples, on ps pcpu alone", async () => {

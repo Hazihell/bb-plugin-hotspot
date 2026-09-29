@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyKill, checkInteractiveCaller, isInteractiveShell, narrowPlan, parseKillLine, planKill, processKey, readKillRows } from "../lib/kill.ts";
+import { applyKill, checkInteractiveCaller, isInteractiveShell, narrowPlan, parseKillLine, planKill, readKillRows } from "../lib/kill.ts";
 
 const THREAD = "thr_target0001";
 const OTHER = "thr_other00001";
@@ -62,6 +62,7 @@ test("parses pid, uid, start time, argv and the thread from a ps -E line", () =>
     tty: null,
     cpuPercent: 12.5,
     startedAt: START,
+    key: `311@${START}`,
     argv: "node next dev",
     name: "node next dev",
     // `next` is not a file, so nothing after node is named.
@@ -411,7 +412,7 @@ test("a plan narrowed to one process keeps it and the targets it started, childr
   // The shell takes everything it started; a leaf takes only itself.
   assert.deepEqual(narrowPlan(whole, rows, keyOf(310)).targets.map((target) => target.pid), [312, 311, 313, 310]);
   assert.deepEqual(narrowPlan(whole, rows, keyOf(312)).targets.map((target) => target.pid), [312]);
-  assert.equal(processKey(whole.targets[0]), keyOf(312));
+  assert.equal(whole.targets[0].key, keyOf(312));
 });
 
 test("narrowing only removes: a descendant the thread's plan spares stays spared", () => {
@@ -428,6 +429,21 @@ test("narrowing only removes: a descendant the thread's plan spares stays spared
   assert.deepEqual(narrowed.targets.map((target) => target.pid), [311]);
   assert.deepEqual(narrowed.excluded.map((entry) => entry.pid), [312]);
   for (const target of narrowed.targets) assert.ok(sparing.targets.includes(target));
+});
+
+test("narrowing passes through a process the plan does not target to the targets below it", () => {
+  const rows = rowsOf(table());
+  const whole = planKill(rows, THREAD, context);
+  // Were the dev server itself spared, killing its shell still takes the worker below it.
+  const server = whole.targets.find((target) => target.pid === 311);
+  const sparing = {
+    ...whole,
+    targets: whole.targets.filter((target) => target !== server),
+    excluded: [...whole.excluded, { pid: 311, name: server.name, cpuPercent: 0, reason: "a test rule" }],
+  };
+  const narrowed = narrowPlan(sparing, rows, keyOf(310));
+  assert.deepEqual(narrowed.targets.map((target) => target.pid), [312, 313, 310]);
+  assert.deepEqual(narrowed.excluded.map((entry) => entry.pid), [311]);
 });
 
 test("a selected process that is not a target yields no targets, and says why", () => {
@@ -466,8 +482,9 @@ test("apply of a narrowed plan signals nothing outside it", async () => {
   assert.equal(result.killed, 2);
 });
 
-test("readKillRows uses /proc environ off macOS", async () => {
+test("readKillRows uses /proc environ off macOS, and keys a process by its /proc start time as the sampler does", async () => {
   const stdout = [line(10, 1, "node server.js"), line(11, 10, "node child.js")].join("\n");
+  const stat = (pid) => `${pid} (node) S 1 ${Array.from({ length: 9 }, () => "0").join(" ")} 5 5 ${Array.from({ length: 6 }, () => "0").join(" ")} 4242 0`;
   const rows = await readKillRows({
     platform: "linux",
     exec: async (command) => {
@@ -475,9 +492,13 @@ test("readKillRows uses /proc environ off macOS", async () => {
       return stdout;
     },
     readEnviron: async (pid) => (pid === 10 ? `HOME=/root\0BB_THREAD_ID=${THREAD}\0` : null),
+    // pid 11's stat is unreadable: it has no key, so no drill-down row can name it.
+    readStat: async (pid) => (pid === 10 ? stat(pid) : null),
   });
-  assert.deepEqual(rows.map((row) => [row.pid, row.threadId, row.argv]), [
-    [10, THREAD, "node server.js"],
-    [11, null, "node child.js"],
+  assert.deepEqual(rows.map((row) => [row.pid, row.threadId, row.argv, row.key]), [
+    [10, THREAD, "node server.js", "10@4242"],
+    [11, null, "node child.js", null],
   ]);
+  const plan = planKill(rows, THREAD, { uid: UID, selfPids: new Set() });
+  assert.match(narrowPlan(plan, rows, "11@4242").selected.reason, /could not be read/);
 });

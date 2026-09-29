@@ -83,6 +83,8 @@ test("allowKill off refuses planning, applying and the CLI", async () => {
   await harness.setSettings({ allowKill: false });
   await assert.rejects(harness.callRpc("killPlan", { threadId: THREAD }), /turned off/);
   await assert.rejects(harness.callRpc("killApply", { planId: plan.planId }), /turned off/);
+  await assert.rejects(harness.callRpc("killTargets", { threadId: THREAD }), /turned off/);
+  await assert.rejects(harness.callRpc("killPlan", { threadId: THREAD, process: `311@${START}` }), /turned off/);
   const cli = await harness.runCli(["kill", THREAD]);
   assert.notEqual(cli.exitCode, 0);
   const overview = await harness.callRpc("overview", null);

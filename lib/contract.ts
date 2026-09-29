@@ -17,7 +17,7 @@ export type Range = (typeof RANGES)[number];
 
 /** A BB thread id; anything else from the frontend is refused before it reaches the SDK. */
 export const threadIdSchema = z.string().regex(/^thr_[a-z0-9]{8,64}$/);
-/** A process's pid and `ps` start time (lib/kill.ts, processKey), as the drill-down's rows carry it. */
+/** A process's pid and start time (lib/procs.ts, ProcessRow.key), as the drill-down's rows carry it. */
 export const processKeySchema = z.string().regex(/^\d{1,10}@[A-Za-z0-9: ]{1,40}$/);
 
 const killProcessSchema = z.object({
@@ -34,7 +34,7 @@ export const killPlanSchema = z.object({
   expiresAt: z.number(),
   threadId: z.string(),
   title: z.string().nullable(),
-  targets: z.array(killProcessSchema.extend({ command: z.string(), key: z.string() })),
+  targets: z.array(killProcessSchema.extend({ command: z.string(), key: z.string().nullable() })),
   excluded: z.array(killProcessSchema.extend({ reason: z.string() })),
   /**
    * Null for the whole thread. For one process: which, and why nothing is
